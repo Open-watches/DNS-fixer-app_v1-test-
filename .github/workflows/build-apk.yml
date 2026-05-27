@@ -1,0 +1,47 @@
+name: Android CI Compiler
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Source Code
+      uses: actions/checkout@v4
+
+    - name: Set up Java JDK 17
+      uses: actions/setup-java@v4
+      with:
+        java-version: '17'
+        distribution: 'temurin'
+
+    # The Bootstrap Engine: Automatically provisions the missing wrapper
+    - name: Bootstrap Gradle Wrapper
+      run: |
+        if [ ! -f gradlew ]; then
+          echo "⚠️ No local gradle wrapper detected. Bootstrapping workspace..."
+          gradle wrapper --gradle-version 8.5 --distribution-type bin
+        else
+          echo "✅ Existing gradle wrapper detected."
+        fi
+
+    - name: Setup Gradle Cache
+      uses: gradle/actions/setup-gradle@v3
+
+    - name: Grant Execute Permissions to Gradle
+      run: chmod +x gradlew
+
+    - name: Assemble Debug APK
+      run: ./gradlew assembleDebug --no-daemon
+
+    - name: Upload Compiled App Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: Community-DNSFix-APK
+        path: app/build/outputs/apk/debug/app-debug.apk
+        retention-days: 7
+        
