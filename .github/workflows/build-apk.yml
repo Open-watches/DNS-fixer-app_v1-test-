@@ -19,19 +19,12 @@ jobs:
         java-version: '17'
         distribution: 'temurin'
 
-    # The Bootstrap Engine: Using sub-directory isolation to satisfy modern Gradle versions
+    # Pure, standard gradle wrapper generation. No tricks.
     - name: Bootstrap Gradle Wrapper
       run: |
         if [ ! -f gradlew ]; then
-          echo "⚠️ No local gradle wrapper detected. Bootstrapping workspace in isolation..."
-          mkdir temp-wrapper && cd temp-wrapper
+          echo "⚠️ No local gradle wrapper detected. Generating standard wrapper..."
           gradle wrapper --gradle-version 8.5 --distribution-type bin
-          cd ..
-          mv temp-wrapper/gradlew ./gradlew
-          mv temp-wrapper/gradlew.bat ./gradlew.bat
-          mv temp-wrapper/gradle ./gradle
-          rm -rf temp-wrapper
-          echo "✅ Isolated bootstrap complete."
         else
           echo "✅ Existing gradle wrapper detected."
         fi
