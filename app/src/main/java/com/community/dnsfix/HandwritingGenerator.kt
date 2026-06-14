@@ -18,7 +18,7 @@ class HandwritingGenerator(
     private val marginLeft = 100f
     private val marginRight = 80f
     private val globalSlant = 7f
-    private val globalRandom = java.util.Random()
+    private val globalRandom = Random()
     private val pen = PenState()
     private var baselineDrift = 0f
     private val driftStep = 0.4f
@@ -35,7 +35,6 @@ class HandwritingGenerator(
     private val glyphRenderer = GlyphRenderer(baseInkColor)
     private val paperRenderer = PaperRenderer(width, height)
 
-    // Error logging (unchanged)
     private var lastErrorMessage: String? = null
     private var lastErrorStackTrace: String? = null
     private fun logError(msg: String, e: Exception?) {

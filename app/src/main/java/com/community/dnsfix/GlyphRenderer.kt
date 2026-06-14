@@ -1,124 +1,92 @@
 package com.community.dnsfix.handwriting
 
-import android.content.Context
 import android.graphics.*
-import java.io.File
-import java.io.FileOutputStream
+import kotlin.math.tan
 import java.util.Random
 
-class HandwritingGenerator(
-    private val width: Int = 1000,
-    private val height: Int = 1200,
-    private val context: Context? = null,
-    private val baseInkColor: Int = Color.rgb(0, 51, 153),
-    private val lineSpacing: Float = 72f,
-    private val customTypeface: Typeface? = null
-) {
-    private val fontSize = (lineSpacing * 0.58f).coerceIn(40f, 48f)
-    private val marginLeft = 100f
-    private val marginRight = 80f
-    private val globalSlant = 7f
-    private val globalRandom = Random()   // java.util.Random
-    private val pen = PenState()
-    private var baselineDrift = 0f
-    private val driftStep = 0.4f
-    private val driftClamp = 5.0f
-
-    private val layoutEngine = LayoutEngine(
-        Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            textSize = fontSize
-            typeface = customTypeface ?: Typeface.DEFAULT
-        },
-        width.toFloat(),
-        marginRight
-    )
-    private val glyphRenderer = GlyphRenderer(baseInkColor)
-    private val paperRenderer = PaperRenderer(width, height)
-
-    // Error logging (unchanged)
-    private var lastErrorMessage: String? = null
-    private var lastErrorStackTrace: String? = null
-    private fun logError(msg: String, e: Exception?) {
-        lastErrorMessage = msg + (e?.let { ": ${it.message}" } ?: "")
-        lastErrorStackTrace = e?.stackTraceToString() ?: "No stack trace"
-        context?.let {
-            try {
-                val crashDir = File(it.cacheDir, "handwriting_logs")
-                if (!crashDir.exists()) crashDir.mkdirs()
-                val file = File(crashDir, "error_${System.currentTimeMillis()}.txt")
-                FileOutputStream(file).use { fos ->
-                    fos.write("$msg\n".toByteArray())
-                    fos.write(lastErrorStackTrace!!.toByteArray())
-                }
-            } catch (_: Exception) {}
-        }
+class GlyphRenderer(private val baseInkColor: Int) {
+    private val spreadPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL
+        xfermode = PorterDuffXfermode(PorterDuff.Mode.DARKEN)
     }
-    fun getLastError(): Pair<String?, String?> = Pair(lastErrorMessage, lastErrorStackTrace)
+    private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
 
-    fun generateBitmap(text: String): Bitmap = generateBitmap(text, width, height)
+    fun drawWord(
+        canvas: Canvas,
+        wp: WordPlacement,
+        x: Float,
+        y: Float,
+        baselineDrift: Float,
+        globalSlant: Float,
+        typeface: Typeface?
+    ) {
+        val t = wp.transforms
+        textPaint.typeface = typeface ?: Typeface.DEFAULT
 
-    fun generateBitmap(text: String, canvasWidth: Int, canvasHeight: Int): Bitmap {
-        return try {
-            lastErrorMessage = null
-            lastErrorStackTrace = null
-            realGenerateBitmap(text, canvasWidth, canvasHeight)
-        } catch (e: Exception) {
-            logError("Generation failed", e)
-            createErrorBitmap(canvasWidth, canvasHeight, e)
-        }
-    }
+        val baseRed = Color.red(baseInkColor)
+        val baseGreen = Color.green(baseInkColor)
+        val baseBlue = Color.blue(baseInkColor)
+        val alpha = (150 + t.pressure * 105).toInt().coerceIn(40, 255)
+        val density = (0.5f + t.pressure * 0.5f).coerceIn(0.5f, 1f)
 
-    private fun realGenerateBitmap(text: String, w: Int, h: Int): Bitmap {
-        pen.pressure = 0.7f; pen.slantOffset = 0f; pen.tremor = 1.0f; pen.fatigue = 0f
-        baselineDrift = 0f
+        val washRand = Random((wp.seed and 0x7FFFFFFF).toLong())
+        val washR = (baseRed + PenState.gaussian(0f, 8f, washRand)).coerceIn(0f, 255f)
+        val washG = (baseGreen + PenState.gaussian(0f, 8f, washRand)).coerceIn(0f, 255f)
+        val washB = (baseBlue + PenState.gaussian(0f, 8f, washRand)).coerceIn(0f, 255f)
 
-        val bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-        val canvas = Canvas(bitmap)
-        paperRenderer.draw(canvas)
-        PaperRenderer.drawLinesAndMargin(canvas, lineSpacing, marginLeft, w.toFloat(), h.toFloat())
+        val finalColor = Color.argb(alpha, (washR * density).toInt(), (washG * density).toInt(), (washB * density).toInt())
+        textPaint.color = finalColor
 
-        if (text.isNotEmpty()) layoutAndDraw(canvas, text, w)
-        return bitmap
-    }
+        val rawPath = Path()
+        textPaint.getTextPath(wp.text, 0, wp.text.length, 0f, 0f, rawPath)
 
-    private fun layoutAndDraw(canvas: Canvas, text: String, pageWidth: Int) {
-        val tokens = Tokenizer.tokenize(text)
-        val placements = layoutEngine.computePlacements(tokens, pen, globalRandom)
-        if (placements.isEmpty()) return
+        canvas.save()
+        val matrix = Matrix()
+        val slantDeg = globalSlant + t.slantOffset
+        val skewX = -tan(Math.toRadians(slantDeg.toDouble())).toFloat()
+        matrix.postSkew(skewX, 0f)
+        matrix.postRotate(t.rotation)
+        matrix.postScale(t.scaleX, t.scaleY)
+        matrix.postTranslate(x + t.dx, y + baselineDrift + t.dy)
+        canvas.concat(matrix)
 
-        var y = lineSpacing * 1.8f
-        for (line in placements) {
-            if (line.isEmpty()) {
-                y += lineSpacing * (0.9f + globalRandom.nextFloat() * 0.2f)
-                baselineDrift += PenState.gaussian(0f, driftStep, globalRandom).coerceIn(-driftClamp, driftClamp)
-                pen.update(rest = true, random = globalRandom)
-                continue
+        if (rawPath.isEmpty) {
+            val spreadRand = Random((wp.seed * 31).toLong())
+            for (i in 0..3) {
+                val offX = PenState.gaussian(0f, 0.4f, spreadRand)
+                val offY = PenState.gaussian(0f, 0.4f, spreadRand)
+                spreadPaint.color = Color.argb((alpha * 0.12f).toInt().coerceIn(5, 20), washR.toInt(), washG.toInt(), washB.toInt())
+                canvas.save()
+                canvas.translate(offX, offY)
+                canvas.drawText(wp.text, 0f, 0f, spreadPaint)
+                canvas.restore()
             }
-            var x = marginLeft + 20f + PenState.gaussian(0f, 2.5f, globalRandom)
-            for ((index, wp) in line.withIndex()) {
-                glyphRenderer.drawWord(canvas, wp, x, y, baselineDrift, globalSlant, customTypeface)
-                x += wp.estimatedWidth
-                if (index < line.size - 1) {
-                    val nextWp = line[index + 1]
-                    if (!(wp.isPartOfMyanmarWord && nextWp.isPartOfMyanmarWord)) {
-                        x += 6f + PenState.gaussian(0f, 2.5f, globalRandom).coerceIn(-4f, 4f)
-                    }
-                }
-                pen.update(rest = false, random = globalRandom)
+            canvas.drawText(wp.text, 0f, 0f, textPaint)
+        } else {
+            val baseStrength = when {
+                wp.text.length <= 2 -> 2.5f
+                wp.text.length <= 4 -> 2.0f
+                else -> 1.5f
             }
-            y += lineSpacing * (0.9f + globalRandom.nextFloat() * 0.2f)
-            baselineDrift += PenState.gaussian(0f, driftStep, globalRandom).coerceIn(-driftClamp, driftClamp)
-            pen.update(rest = true, random = globalRandom)
-        }
-    }
+            val lengthFactor = 1f + (wp.text.length - 1) * 0.06f
+            val warpStrength = baseStrength * lengthFactor * t.tremor
+            val warpedPath = PathWarper.warpWithGrid(rawPath, warpStrength, wp.seed xor 0x5A5A5A5A, wp.text.length)
 
-    private fun createErrorBitmap(w: Int, h: Int, e: Exception): Bitmap {
-        val bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-        val canvas = Canvas(bitmap)
-        canvas.drawColor(Color.WHITE)
-        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.RED; textSize = 28f }
-        canvas.drawText("Generation failed: ${e.message}", 30f, 100f, paint)
-        canvas.drawText("Check notification for details", 30f, 140f, paint)
-        return bitmap
+            val spreadRand = Random((wp.seed * 31).toLong())
+            for (i in 0..7) {
+                val offX = PenState.gaussian(0f, 0.6f, spreadRand)
+                val offY = PenState.gaussian(0f, 0.6f, spreadRand)
+                spreadPaint.color = Color.argb(
+                    (alpha * 0.15f * (1f - i / 8f)).toInt().coerceIn(5, 30),
+                    washR.toInt(), washG.toInt(), washB.toInt()
+                )
+                canvas.save()
+                canvas.translate(offX, offY)
+                canvas.drawPath(warpedPath, spreadPaint)
+                canvas.restore()
+            }
+            canvas.drawPath(warpedPath, textPaint)
+        }
+        canvas.restore()
     }
 }
