@@ -1,6 +1,6 @@
 package com.community.dnsfix.handwriting
 
-import kotlin.random.Random
+import java.util.Random   // <-- java.util.Random, which has nextGaussian()
 
 data class PenState(
     var pressure: Float = 0.7f,
@@ -9,8 +9,12 @@ data class PenState(
     var fatigue: Float = 0f
 ) {
     companion object {
+        /**
+         * Gaussian (normal) distribution using java.util.Random.
+         * All other modules (PathWarper, LayoutEngine) also use java.util.Random.
+         */
         fun gaussian(mean: Float, stdDev: Float, random: Random): Float =
-            (random.nextGaussian() * stdDev + mean).toFloat()
+            (random.nextGaussian().toFloat() * stdDev + mean)
     }
 
     fun update(rest: Boolean, random: Random) {

@@ -4,7 +4,7 @@ import android.content.Context
 import android.graphics.*
 import java.io.File
 import java.io.FileOutputStream
-import kotlin.random.Random
+import java.util.Random
 
 class HandwritingGenerator(
     private val width: Int = 1000,
@@ -18,7 +18,7 @@ class HandwritingGenerator(
     private val marginLeft = 100f
     private val marginRight = 80f
     private val globalSlant = 7f
-    private val globalRandom = Random
+    private val globalRandom = java.util.Random()
     private val pen = PenState()
     private var baselineDrift = 0f
     private val driftStep = 0.4f
