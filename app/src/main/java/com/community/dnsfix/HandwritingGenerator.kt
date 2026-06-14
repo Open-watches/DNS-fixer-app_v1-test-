@@ -14,7 +14,7 @@ class HandwritingGenerator(
     private val width: Int = 1000,
     private val height: Int = 1200,
     private val context: Context? = null,
-    private val baseInkColor: Int = Color.rgb(25, 30, 50),   // deep blue‑black ink
+    private val baseInkColor: Int = Color.rgb(25, 30, 50),
     private val lineSpacing: Float = 72f,
     private val customTypeface: Typeface? = null
 ) {
@@ -41,8 +41,10 @@ class HandwritingGenerator(
         color = Color.parseColor("#E8A5A5")
         strokeWidth = 3f
     }
-    private val bleedPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        maskFilter = BlurMaskFilter(2.5f, BlurMaskFilter.Blur.NORMAL)
+    // Bleed paint for ink spread – no blur, we'll do manual passes
+    private val spreadPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL
+        xfermode = PorterDuffXfermode(PorterDuff.Mode.DARKEN)  // blend layers
     }
 
     // ----- Pen physics state (continuous across words) -----
@@ -78,10 +80,8 @@ class HandwritingGenerator(
                     half4 main(float2 fragCoord) {
                         float2 uv = fragCoord / resolution;
                         
-                        // Cellulose fibre pattern
                         float fiber = sin(uv.y * 120.0 + uv.x * 2.0) * 0.5 + 0.5;
                         fiber = fiber * 0.06;
-                        
                         float grain = random(uv) * 0.08;
                         float texture = grain + fiber;
                         float vignette = 1.0 - length(uv - 0.5) * 0.3;
@@ -328,31 +328,47 @@ class HandwritingGenerator(
         val alpha = (150 + t.pressure * 105).toInt().coerceIn(40, 255)
         val density = (0.5f + t.pressure * 0.5f).coerceIn(0.5f, 1f)
 
-        // ✅ Fixed: added .toLong()
+        // Wet‑ink wash (slight colour variation per token)
         val washRand = Random((wp.seed and 0x7FFFFFFF).toLong())
         val washR = (baseRed + gaussian(0f, 8f, washRand)).coerceIn(0f, 255f)
         val washG = (baseGreen + gaussian(0f, 8f, washRand)).coerceIn(0f, 255f)
         val washB = (baseBlue + gaussian(0f, 8f, washRand)).coerceIn(0f, 255f)
 
-        textPaint.color = Color.argb(
+        val finalColor = Color.argb(
             alpha,
             (washR * density).toInt(),
             (washG * density).toInt(),
             (washB * density).toInt()
         )
+        textPaint.color = finalColor
 
+        // Get fully shaped word path
         val rawPath = Path()
         textPaint.getTextPath(wp.text, 0, wp.text.length, 0f, 0f, rawPath)
         if (rawPath.isEmpty) return
+
+        // Measure word bounds for coherent warping
+        val bounds = RectF()
+        rawPath.computeBounds(bounds, true)
+        val wordWidth = bounds.width()
+        val wordHeight = bounds.height()
 
         // Adaptive warp strength
         val baseStrength = 1.5f
         val lengthFactor = 1f + (wp.text.length - 1) * 0.06f
         val warpStrength = baseStrength * lengthFactor * t.tremor
 
+        // Use grid‑based warp (preserves cluster alignment)
         val warpSeed = wp.seed xor 0x5A5A5A5A
-        val warpedPath = warpAllContours(rawPath, strength = warpStrength, seed = warpSeed)
+        val warpedPath = warpPathWithGrid(
+            rawPath,
+            wordWidth,
+            wordHeight,
+            warpStrength,
+            warpSeed
+        )
 
+        // ---------- Ink spread (multi‑pass) ----------
         canvas.save()
         val matrix = Matrix()
         val slantDeg = globalSlant + t.slantOffset
@@ -363,10 +379,105 @@ class HandwritingGenerator(
         matrix.postTranslate(startX + t.dx, baselineY + baselineDrift + t.dy)
         canvas.concat(matrix)
 
-        bleedPaint.color = Color.argb((alpha * 0.25f).toInt(), 40, 30, 20)
-        canvas.drawPath(warpedPath, bleedPaint)
+        // Spread passes: simulate ink bleeding into paper fibres
+        val spreadCount = 8
+        val spreadRand = Random((wp.seed * 31).toLong())
+        for (i in 0 until spreadCount) {
+            val offsetX = gaussian(0f, 0.6f, spreadRand)
+            val offsetY = gaussian(0f, 0.6f, spreadRand)
+            val spreadAlpha = (alpha * 0.15f * (1f - i.toFloat() / spreadCount)).toInt().coerceIn(5, 30)
+            spreadPaint.color = Color.argb(spreadAlpha, washR.toInt(), washG.toInt(), washB.toInt())
+
+            canvas.save()
+            canvas.translate(offsetX, offsetY)
+            canvas.drawPath(warpedPath, spreadPaint)
+            canvas.restore()
+        }
+
+        // Main solid ink on top
         canvas.drawPath(warpedPath, textPaint)
+
         canvas.restore()
+    }
+
+    /**
+     * Warps a path using a coherent displacement grid so that all contours
+     * within the same word move together – preserving complex cluster alignment.
+     */
+    private fun warpPathWithGrid(
+        source: Path,
+        wordWidth: Float,
+        wordHeight: Float,
+        strength: Float,
+        seed: Int
+    ): Path {
+        // Build displacement grid
+        val gridCols = max(2, ceil(wordWidth / 25f).toInt())
+        val gridRows = max(2, ceil(wordHeight / 25f).toInt())
+        val rand = Random(seed.toLong())
+
+        val gridX = Array(gridRows + 1) { FloatArray(gridCols + 1) }
+        val gridY = Array(gridRows + 1) { FloatArray(gridCols + 1) }
+        for (r in 0..gridRows) {
+            for (c in 0..gridCols) {
+                gridX[r][c] = gaussian(0f, strength, rand)
+                gridY[r][c] = gaussian(0f, strength, rand)
+            }
+        }
+
+        val cellWidth = wordWidth / gridCols
+        val cellHeight = wordHeight / gridRows
+
+        val pm = PathMeasure(source, false)
+        val result = Path()
+        val pos = FloatArray(2)
+
+        do {
+            val contourLength = pm.length
+            if (contourLength == 0f) continue
+
+            val step = 2.5f
+            val numSamples = ceil(contourLength / step).toInt().coerceAtLeast(1)
+            val realStep = contourLength / numSamples
+
+            var firstPoint = true
+
+            for (i in 0..numSamples) {
+                pm.getPosTan(i * realStep, pos, null)
+
+                val col = (pos[0] / cellWidth).coerceIn(0f, gridCols.toFloat() - 1f)
+                val row = (pos[1] / cellHeight).coerceIn(0f, gridRows.toFloat() - 1f)
+
+                val c0 = col.toInt()
+                val r0 = row.toInt()
+                val c1 = min(c0 + 1, gridCols)
+                val r1 = min(r0 + 1, gridRows)
+
+                val fx = col - c0
+                val fy = row - r0
+
+                val dx = (1 - fx) * (1 - fy) * gridX[r0][c0] +
+                         fx * (1 - fy) * gridX[r0][c1] +
+                         (1 - fx) * fy * gridX[r1][c0] +
+                         fx * fy * gridX[r1][c1]
+                val dy = (1 - fx) * (1 - fy) * gridY[r0][c0] +
+                         fx * (1 - fy) * gridY[r0][c1] +
+                         (1 - fx) * fy * gridY[r1][c0] +
+                         fx * fy * gridY[r1][c1]
+
+                val warpedX = pos[0] + dx
+                val warpedY = pos[1] + dy
+
+                if (firstPoint) {
+                    result.moveTo(warpedX, warpedY)
+                    firstPoint = false
+                } else {
+                    result.lineTo(warpedX, warpedY)
+                }
+            }
+        } while (pm.nextContour())
+
+        return result
     }
 
     // ----- Pen state evolution -----
@@ -386,59 +497,6 @@ class HandwritingGenerator(
         pen.pressure = (pen.pressure - 0.0002f + gaussian(0f, 0.01f, globalRandom)).coerceIn(0.4f, 0.9f)
         pen.slantOffset = (pen.slantOffset + gaussian(0f, 0.05f, globalRandom)).coerceIn(-4f, 4f)
         pen.tremor = (1.0f + pen.fatigue * 0.8f).coerceAtMost(1.8f)
-    }
-
-    // ----- Path warping -----
-    private fun warpAllContours(source: Path, strength: Float, seed: Int): Path {
-        val pm = PathMeasure(source, false)
-        val result = Path()
-        val pos = FloatArray(2)
-        val tan = FloatArray(2)
-        val rand = Random(seed.toLong())
-
-        do {
-            val contourLength = pm.length
-            if (contourLength == 0f) continue
-
-            val step = 2.5f
-            val numSamples = ceil(contourLength / step).toInt().coerceAtLeast(1)
-            val realStep = contourLength / numSamples
-
-            var prevNoise = 0f
-            var firstPoint = true
-
-            for (i in 0..numSamples) {
-                val dist = i * realStep
-                pm.getPosTan(dist, pos, tan)
-
-                val nx = -tan[1]
-                val ny = tan[0]
-                val normLen = sqrt(nx * nx + ny * ny)
-                if (normLen < 0.001f) {
-                    if (firstPoint) result.moveTo(pos[0], pos[1]) else result.lineTo(pos[0], pos[1])
-                    firstPoint = false
-                    continue
-                }
-                val nxUnit = nx / normLen
-                val nyUnit = ny / normLen
-
-                val rawNoise = gaussian(0f, strength, rand)
-                val smoothNoise = (prevNoise + rawNoise) / 2f
-                prevNoise = smoothNoise
-
-                val warpedX = pos[0] + nxUnit * smoothNoise
-                val warpedY = pos[1] + nyUnit * smoothNoise
-
-                if (firstPoint) {
-                    result.moveTo(warpedX, warpedY)
-                    firstPoint = false
-                } else {
-                    result.lineTo(warpedX, warpedY)
-                }
-            }
-        } while (pm.nextContour())
-
-        return result
     }
 
     // ----- Data classes -----
