@@ -79,11 +79,16 @@ class MainActivity : ComponentActivity() {
                                 lastErrorTrace = trace
                                 generationFailed = true
                                 scope.launch {
-                                    snackbarHostState.showSnackbar(
+                                    val result = snackbarHostState.showSnackbar(
                                         message = "Error: $msg",
-                                        actionLabel = "Copy Log",
-                                        withDismiss = true
+                                        actionLabel = "Copy Log"
                                     )
+                                    if (result == SnackbarResult.ActionPerformed) {
+                                        trace?.let {
+                                            clipboardManager.setText(buildAnnotatedString { append(it) })
+                                            Toast.makeText(context, "Error log copied", Toast.LENGTH_SHORT).show()
+                                        }
+                                    }
                                 }
                             } else {
                                 lastErrorMsg = null
@@ -116,11 +121,9 @@ class MainActivity : ComponentActivity() {
                         Text("Export as PNG")
                     }
 
-                    // Retry button (arrow) – only shown if generation failed
                     if (generationFailed) {
                         Button(
                             onClick = {
-                                // Re-run generation with same text
                                 val generator = HandwritingGenerator(1000, 1200, context)
                                 resultBitmap = generator.generateBitmap(textInput)
                                 val (msg, trace) = generator.getLastError()
@@ -128,11 +131,16 @@ class MainActivity : ComponentActivity() {
                                     lastErrorMsg = msg
                                     lastErrorTrace = trace
                                     scope.launch {
-                                        snackbarHostState.showSnackbar(
+                                        val result = snackbarHostState.showSnackbar(
                                             message = "Error: $msg",
-                                            actionLabel = "Copy Log",
-                                            withDismiss = true
+                                            actionLabel = "Copy Log"
                                         )
+                                        if (result == SnackbarResult.ActionPerformed) {
+                                            trace?.let {
+                                                clipboardManager.setText(buildAnnotatedString { append(it) })
+                                                Toast.makeText(context, "Error log copied", Toast.LENGTH_SHORT).show()
+                                            }
+                                        }
                                     }
                                 } else {
                                     lastErrorMsg = null
@@ -140,7 +148,7 @@ class MainActivity : ComponentActivity() {
                                     generationFailed = false
                                 }
                             },
-                            modifier = Modifier.weight(0.3f)
+                            modifier = Modifier.weight(0.4f)
                         ) {
                             Icon(Icons.Default.Refresh, contentDescription = "Retry")
                             Spacer(modifier = Modifier.width(4.dp))
@@ -168,18 +176,6 @@ class MainActivity : ComponentActivity() {
                             "Your handwritten note will appear here",
                             modifier = Modifier.align(Alignment.Center)
                         )
-                    }
-                }
-            }
-        }
-
-        // Handle snackbar action (copy log)
-        LaunchedEffect(snackbarHostState) {
-            snackbarHostState.currentSnackbarData?.let { data ->
-                if (data.actionLabel == "Copy Log") {
-                    lastErrorTrace?.let { trace ->
-                        clipboardManager.setText(buildAnnotatedString { append(trace) })
-                        Toast.makeText(context, "Error log copied to clipboard", Toast.LENGTH_SHORT).show()
                     }
                 }
             }
