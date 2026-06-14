@@ -7,6 +7,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
+import android.os.Parcelable                // ← required for the cast
 import android.provider.MediaStore
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -28,6 +29,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
+import com.community.dnsfix.handwriting.HandwritingGenerator   // ← import the modular generator
 import kotlinx.coroutines.launch
 import java.io.File
 import java.io.FileOutputStream
@@ -234,7 +236,8 @@ class MainActivity : ComponentActivity() {
             val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
             val shareIntent = Intent(Intent.ACTION_SEND).apply {
                 type = "image/png"
-                putExtra(Intent.EXTRA_STREAM, uri as? java.io.Serializable ?: uri)
+                // ✅ Fixed: explicit cast to Parcelable eliminates ambiguity
+                putExtra(Intent.EXTRA_STREAM, uri as Parcelable)
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             }
             context.startActivity(Intent.createChooser(shareIntent, "Share Handwriting"))
