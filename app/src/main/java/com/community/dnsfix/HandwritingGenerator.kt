@@ -57,7 +57,7 @@ class HandwritingGenerator(
 
     // ----- Baseline drift (reduced aggression) -----
     private var baselineDrift = 0f
-    private val driftStep = 0.4f              // lowered from 0.8f
+    private val driftStep = 0.4f
     private val driftClamp = 5.0f
 
     // ----- Paper shader (AGSL with fiber + grain + vignette) -----
@@ -78,17 +78,12 @@ class HandwritingGenerator(
                     half4 main(float2 fragCoord) {
                         float2 uv = fragCoord / resolution;
                         
-                        // Cellulose fibre pattern (directional streaks)
+                        // Cellulose fibre pattern
                         float fiber = sin(uv.y * 120.0 + uv.x * 2.0) * 0.5 + 0.5;
-                        fiber = fiber * 0.06;  // subtle
+                        fiber = fiber * 0.06;
                         
-                        // Old grain
                         float grain = random(uv) * 0.08;
-                        
-                        // Combine
                         float texture = grain + fiber;
-                        
-                        // Vignette
                         float vignette = 1.0 - length(uv - 0.5) * 0.3;
                         
                         half3 paper = half3(0.976, 0.965, 0.941);
@@ -200,7 +195,6 @@ class HandwritingGenerator(
 
     // ----- Mixed‑script tokenisation -----
     private fun tokenize(text: String): List<String> {
-        // First split by word boundaries (language‑aware)
         val wordIterator = try {
             BreakIterator.getWordInstance(Locale.getDefault()).apply { setText(text) }
         } catch (e: Exception) {
@@ -213,7 +207,6 @@ class HandwritingGenerator(
         while (end != BreakIterator.DONE) {
             val rawToken = text.substring(start, end)
             if (rawToken.isNotEmpty()) {
-                // If the token contains Myanmar, split it into clusters
                 if (containsMyanmar(rawToken)) {
                     tokens.addAll(splitMyanmarClusters(rawToken))
                 } else {
@@ -328,17 +321,15 @@ class HandwritingGenerator(
     private fun drawWholeWord(canvas: Canvas, wp: WordPlacement, startX: Float, baselineY: Float) {
         val t = wp.transforms
 
-        // Base ink colour components
         val baseRed = Color.red(baseInkColor)
         val baseGreen = Color.green(baseInkColor)
         val baseBlue = Color.blue(baseInkColor)
 
-        // Pressure -> alpha & ink density
         val alpha = (150 + t.pressure * 105).toInt().coerceIn(40, 255)
         val density = (0.5f + t.pressure * 0.5f).coerceIn(0.5f, 1f)
 
-        // Wet‑ink wash: ±15 RGB variation per token
-        val washRand = Random(wp.seed and 0x7FFFFFFF)
+        // ✅ Fixed: added .toLong()
+        val washRand = Random((wp.seed and 0x7FFFFFFF).toLong())
         val washR = (baseRed + gaussian(0f, 8f, washRand)).coerceIn(0f, 255f)
         val washG = (baseGreen + gaussian(0f, 8f, washRand)).coerceIn(0f, 255f)
         val washB = (baseBlue + gaussian(0f, 8f, washRand)).coerceIn(0f, 255f)
@@ -354,9 +345,9 @@ class HandwritingGenerator(
         textPaint.getTextPath(wp.text, 0, wp.text.length, 0f, 0f, rawPath)
         if (rawPath.isEmpty) return
 
-        // Adaptive warp strength: longer words warp more
+        // Adaptive warp strength
         val baseStrength = 1.5f
-        val lengthFactor = 1f + (wp.text.length - 1) * 0.06f   // +6% per extra character
+        val lengthFactor = 1f + (wp.text.length - 1) * 0.06f
         val warpStrength = baseStrength * lengthFactor * t.tremor
 
         val warpSeed = wp.seed xor 0x5A5A5A5A
@@ -372,14 +363,13 @@ class HandwritingGenerator(
         matrix.postTranslate(startX + t.dx, baselineY + baselineDrift + t.dy)
         canvas.concat(matrix)
 
-        // Bleed (under‑ink shadow)
         bleedPaint.color = Color.argb((alpha * 0.25f).toInt(), 40, 30, 20)
         canvas.drawPath(warpedPath, bleedPaint)
         canvas.drawPath(warpedPath, textPaint)
         canvas.restore()
     }
 
-    // ----- Pen state evolution (gentler drift) -----
+    // ----- Pen state evolution -----
     private fun updatePenState(rest: Boolean) {
         if (rest) {
             pen.fatigue = (pen.fatigue - 0.005f).coerceAtLeast(0f)
@@ -389,7 +379,6 @@ class HandwritingGenerator(
         pen.pressure = (0.7f - pen.fatigue * 0.3f + gaussian(0f, 0.03f, globalRandom)).coerceIn(0.4f, 0.9f)
         pen.slantOffset = (pen.slantOffset + gaussian(0f, 0.1f, globalRandom)).coerceIn(-4f, 4f)
         pen.tremor = (1.0f + pen.fatigue * 0.8f).coerceAtMost(1.8f)
-        // baseline drift is handled in layout loops, not here
     }
 
     private fun evolvePenState() {
@@ -399,7 +388,7 @@ class HandwritingGenerator(
         pen.tremor = (1.0f + pen.fatigue * 0.8f).coerceAtMost(1.8f)
     }
 
-    // ----- Path warping (same robust, zero‑alloc implementation) -----
+    // ----- Path warping -----
     private fun warpAllContours(source: Path, strength: Float, seed: Int): Path {
         val pm = PathMeasure(source, false)
         val result = Path()
