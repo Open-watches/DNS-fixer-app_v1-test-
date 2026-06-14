@@ -1,4 +1,4 @@
-name: Android CI Compiler
+Name: Android CI Compiler
 
 on:
   push:
@@ -19,14 +19,19 @@ jobs:
         java-version: '17'
         distribution: 'temurin'
 
-    # The Bootstrap Engine: Patched to isolate the initialization sequence from global Gradle versions
+    # The Bootstrap Engine: Using sub-directory isolation to satisfy modern Gradle versions
     - name: Bootstrap Gradle Wrapper
       run: |
         if [ ! -f gradlew ]; then
           echo "⚠️ No local gradle wrapper detected. Bootstrapping workspace in isolation..."
-          touch dummy.gradle
-          gradle wrapper --gradle-version 8.5 --distribution-type bin -b dummy.gradle -c dummy.gradle
-          rm dummy.gradle
+          mkdir temp-wrapper && cd temp-wrapper
+          gradle wrapper --gradle-version 8.5 --distribution-type bin
+          cd ..
+          mv temp-wrapper/gradlew ./gradlew
+          mv temp-wrapper/gradlew.bat ./gradlew.bat
+          mv temp-wrapper/gradle ./gradle
+          rm -rf temp-wrapper
+          echo "✅ Isolated bootstrap complete."
         else
           echo "✅ Existing gradle wrapper detected."
         fi
