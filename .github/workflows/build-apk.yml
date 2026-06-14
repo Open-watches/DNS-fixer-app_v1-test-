@@ -1,4 +1,4 @@
-Name: Android CI Compiler
+name: Android CI Compiler
 
 on:
   push:
