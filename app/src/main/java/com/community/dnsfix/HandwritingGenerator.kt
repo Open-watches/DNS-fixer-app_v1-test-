@@ -14,7 +14,7 @@ class HandwritingGenerator(
     private val width: Int = 1000,
     private val height: Int = 1200,
     private val context: Context? = null,
-    private val baseInkColor: Int = Color.rgb(25, 30, 50),
+    private val baseInkColor: Int = Color.rgb(0, 51, 153),   // classic blue pen
     private val lineSpacing: Float = 72f,
     private val customTypeface: Typeface? = null
 ) {
@@ -41,10 +41,9 @@ class HandwritingGenerator(
         color = Color.parseColor("#E8A5A5")
         strokeWidth = 3f
     }
-    // Bleed paint for ink spread – no blur, we'll do manual passes
     private val spreadPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.FILL
-        xfermode = PorterDuffXfermode(PorterDuff.Mode.DARKEN)  // blend layers
+        xfermode = PorterDuffXfermode(PorterDuff.Mode.DARKEN)
     }
 
     // ----- Pen physics state (continuous across words) -----
@@ -194,30 +193,41 @@ class HandwritingGenerator(
     }
 
     // ----- Mixed‑script tokenisation -----
-    private fun tokenize(text: String): List<String> {
+    private fun tokenize(text: String): List<TokenWithType> {
+        // First, split by word boundaries
         val wordIterator = try {
             BreakIterator.getWordInstance(Locale.getDefault()).apply { setText(text) }
         } catch (e: Exception) {
             BreakIterator.getCharacterInstance().apply { setText(text) }
         }
 
-        val tokens = mutableListOf<String>()
+        val result = mutableListOf<TokenWithType>()
         var start = wordIterator.first()
         var end = wordIterator.next()
         while (end != BreakIterator.DONE) {
             val rawToken = text.substring(start, end)
             if (rawToken.isNotEmpty()) {
                 if (containsMyanmar(rawToken)) {
-                    tokens.addAll(splitMyanmarClusters(rawToken))
+                    // Split into clusters, mark each as part of the same Myanmar word
+                    val clusters = splitMyanmarClusters(rawToken)
+                    for ((index, cluster) in clusters.withIndex()) {
+                        result.add(TokenWithType(cluster, isMyanmarCluster = true, isLastInMyanmarWord = index == clusters.lastIndex))
+                    }
                 } else {
-                    tokens.add(rawToken)
+                    result.add(TokenWithType(rawToken, isMyanmarCluster = false, isLastInMyanmarWord = true))
                 }
             }
             start = end
             end = wordIterator.next()
         }
-        return tokens
+        return result
     }
+
+    private data class TokenWithType(
+        val text: String,
+        val isMyanmarCluster: Boolean,
+        val isLastInMyanmarWord: Boolean
+    )
 
     private fun containsMyanmar(s: String): Boolean {
         for (ch in s) {
@@ -245,8 +255,8 @@ class HandwritingGenerator(
 
     // ----- Layout & drawing (continuous pen state) -----
     private fun layoutAndDraw(canvas: Canvas, text: String, pageWidth: Int) {
-        val tokens = tokenize(text)
-        val placements = computePlacements(tokens, pageWidth)
+        val tokenList = tokenize(text)
+        val placements = computePlacements(tokenList, pageWidth)
         if (placements.isEmpty()) return
 
         var y = lineSpacing * 1.8f
@@ -263,7 +273,11 @@ class HandwritingGenerator(
                 drawWholeWord(canvas, wp, x, y)
                 x += wp.estimatedWidth
                 if (index < line.size - 1) {
-                    x += 6f + gaussian(0f, 2.5f, globalRandom).coerceIn(-4f, 4f)
+                    val nextWp = line[index + 1]
+                    // Only add inter-word space if we are NOT between clusters of the same Myanmar word
+                    if (!(wp.isPartOfMyanmarWord && nextWp.isPartOfMyanmarWord)) {
+                        x += 6f + gaussian(0f, 2.5f, globalRandom).coerceIn(-4f, 4f)
+                    }
                 }
                 updatePenState(rest = false)
             }
@@ -273,14 +287,14 @@ class HandwritingGenerator(
         }
     }
 
-    private fun computePlacements(tokens: List<String>, pageWidth: Int): List<List<WordPlacement>> {
+    private fun computePlacements(tokens: List<TokenWithType>, pageWidth: Int): List<List<WordPlacement>> {
         val lines = mutableListOf<MutableList<WordPlacement>>()
         var currentLine = mutableListOf<WordPlacement>()
         var currentWidth = 0f
         var wordIndex = 0
 
-        for (token in tokens) {
-            if (token == "\n") {
+        for (tok in tokens) {
+            if (tok.text == "\n") {
                 if (currentLine.isNotEmpty()) lines.add(currentLine)
                 lines.add(mutableListOf())
                 currentLine = mutableListOf()
@@ -288,7 +302,7 @@ class HandwritingGenerator(
                 continue
             }
 
-            val seed = (token.hashCode() * 31 + wordIndex) and 0x7fffffff
+            val seed = (tok.text.hashCode() * 31 + wordIndex) and 0x7fffffff
             wordIndex++
 
             val rand = Random(seed.toLong())
@@ -302,7 +316,7 @@ class HandwritingGenerator(
             val tremor = pen.tremor * (1f + pen.fatigue * 0.5f)
 
             val transforms = WordTransforms(pressure, scaleX, scaleY, slantOffset, rotation, dx, dy, tremor)
-            val nativeWidth = textPaint.measureText(token)
+            val nativeWidth = textPaint.measureText(tok.text)
             val finalWidth = nativeWidth * scaleX
 
             if (currentWidth + finalWidth > pageWidth - marginRight && currentLine.isNotEmpty()) {
@@ -310,7 +324,15 @@ class HandwritingGenerator(
                 currentLine = mutableListOf()
                 currentWidth = 0f
             }
-            currentLine.add(WordPlacement(token, seed, finalWidth, transforms))
+            currentLine.add(
+                WordPlacement(
+                    text = tok.text,
+                    seed = seed,
+                    estimatedWidth = finalWidth,
+                    transforms = transforms,
+                    isPartOfMyanmarWord = tok.isMyanmarCluster && !tok.isLastInMyanmarWord  // true for non-final clusters of a word
+                )
+            )
             currentWidth += finalWidth
             evolvePenState()
         }
@@ -318,6 +340,7 @@ class HandwritingGenerator(
         return lines
     }
 
+    // ----- drawWholeWord with empty‑path fallback -----
     private fun drawWholeWord(canvas: Canvas, wp: WordPlacement, startX: Float, baselineY: Float) {
         val t = wp.transforms
 
@@ -328,7 +351,6 @@ class HandwritingGenerator(
         val alpha = (150 + t.pressure * 105).toInt().coerceIn(40, 255)
         val density = (0.5f + t.pressure * 0.5f).coerceIn(0.5f, 1f)
 
-        // Wet‑ink wash (slight colour variation per token)
         val washRand = Random((wp.seed and 0x7FFFFFFF).toLong())
         val washR = (baseRed + gaussian(0f, 8f, washRand)).coerceIn(0f, 255f)
         val washG = (baseGreen + gaussian(0f, 8f, washRand)).coerceIn(0f, 255f)
@@ -342,33 +364,9 @@ class HandwritingGenerator(
         )
         textPaint.color = finalColor
 
-        // Get fully shaped word path
         val rawPath = Path()
         textPaint.getTextPath(wp.text, 0, wp.text.length, 0f, 0f, rawPath)
-        if (rawPath.isEmpty) return
 
-        // Measure word bounds for coherent warping
-        val bounds = RectF()
-        rawPath.computeBounds(bounds, true)
-        val wordWidth = bounds.width()
-        val wordHeight = bounds.height()
-
-        // Adaptive warp strength
-        val baseStrength = 1.5f
-        val lengthFactor = 1f + (wp.text.length - 1) * 0.06f
-        val warpStrength = baseStrength * lengthFactor * t.tremor
-
-        // Use grid‑based warp (preserves cluster alignment)
-        val warpSeed = wp.seed xor 0x5A5A5A5A
-        val warpedPath = warpPathWithGrid(
-            rawPath,
-            wordWidth,
-            wordHeight,
-            warpStrength,
-            warpSeed
-        )
-
-        // ---------- Ink spread (multi‑pass) ----------
         canvas.save()
         val matrix = Matrix()
         val slantDeg = globalSlant + t.slantOffset
@@ -379,41 +377,80 @@ class HandwritingGenerator(
         matrix.postTranslate(startX + t.dx, baselineY + baselineDrift + t.dy)
         canvas.concat(matrix)
 
-        // Spread passes: simulate ink bleeding into paper fibres
-        val spreadCount = 8
-        val spreadRand = Random((wp.seed * 31).toLong())
-        for (i in 0 until spreadCount) {
-            val offsetX = gaussian(0f, 0.6f, spreadRand)
-            val offsetY = gaussian(0f, 0.6f, spreadRand)
-            val spreadAlpha = (alpha * 0.15f * (1f - i.toFloat() / spreadCount)).toInt().coerceIn(5, 30)
-            spreadPaint.color = Color.argb(spreadAlpha, washR.toInt(), washG.toInt(), washB.toInt())
+        if (rawPath.isEmpty) {
+            // FALLBACK: draw text directly with transformations and ink spread
+            val spreadCount = 4
+            val spreadRand = Random((wp.seed * 31).toLong())
+            for (i in 0 until spreadCount) {
+                val offsetX = gaussian(0f, 0.4f, spreadRand)
+                val offsetY = gaussian(0f, 0.4f, spreadRand)
+                val spreadAlpha = (alpha * 0.12f).toInt().coerceIn(5, 20)
+                spreadPaint.color = Color.argb(spreadAlpha, washR.toInt(), washG.toInt(), washB.toInt())
+                canvas.save()
+                canvas.translate(offsetX, offsetY)
+                canvas.drawText(wp.text, 0f, 0f, spreadPaint)
+                canvas.restore()
+            }
+            canvas.drawText(wp.text, 0f, 0f, textPaint)
+        } else {
+            // Normal path‑based warp rendering
+            val bounds = RectF()
+            rawPath.computeBounds(bounds, true)
+            val wordWidth = bounds.width()
+            val wordHeight = bounds.height()
 
-            canvas.save()
-            canvas.translate(offsetX, offsetY)
-            canvas.drawPath(warpedPath, spreadPaint)
-            canvas.restore()
+            val baseStrength = when {
+                wp.text.length <= 2 -> 2.5f
+                wp.text.length <= 4 -> 2.0f
+                else -> 1.5f
+            }
+            val lengthFactor = 1f + (wp.text.length - 1) * 0.06f
+            val warpStrength = baseStrength * lengthFactor * t.tremor
+
+            val warpSeed = wp.seed xor 0x5A5A5A5A
+            val warpedPath = warpPathWithGrid(
+                rawPath,
+                wordWidth,
+                wordHeight,
+                warpStrength,
+                warpSeed,
+                wp.text.length
+            )
+
+            val spreadCount = 8
+            val spreadRand = Random((wp.seed * 31).toLong())
+            for (i in 0 until spreadCount) {
+                val offsetX = gaussian(0f, 0.6f, spreadRand)
+                val offsetY = gaussian(0f, 0.6f, spreadRand)
+                val spreadAlpha = (alpha * 0.15f * (1f - i.toFloat() / spreadCount)).toInt().coerceIn(5, 30)
+                spreadPaint.color = Color.argb(spreadAlpha, washR.toInt(), washG.toInt(), washB.toInt())
+
+                canvas.save()
+                canvas.translate(offsetX, offsetY)
+                canvas.drawPath(warpedPath, spreadPaint)
+                canvas.restore()
+            }
+            canvas.drawPath(warpedPath, textPaint)
         }
-
-        // Main solid ink on top
-        canvas.drawPath(warpedPath, textPaint)
 
         canvas.restore()
     }
 
-    /**
-     * Warps a path using a coherent displacement grid so that all contours
-     * within the same word move together – preserving complex cluster alignment.
-     */
     private fun warpPathWithGrid(
         source: Path,
         wordWidth: Float,
         wordHeight: Float,
         strength: Float,
-        seed: Int
+        seed: Int,
+        tokenLength: Int
     ): Path {
-        // Build displacement grid
-        val gridCols = max(2, ceil(wordWidth / 25f).toInt())
-        val gridRows = max(2, ceil(wordHeight / 25f).toInt())
+        val cellSize = when {
+            tokenLength <= 2 -> 12f
+            tokenLength <= 4 -> 18f
+            else -> 25f
+        }
+        val gridCols = max(2, ceil(wordWidth / cellSize).toInt())
+        val gridRows = max(2, ceil(wordHeight / cellSize).toInt())
         val rand = Random(seed.toLong())
 
         val gridX = Array(gridRows + 1) { FloatArray(gridCols + 1) }
@@ -515,7 +552,8 @@ class HandwritingGenerator(
         val text: String,
         val seed: Int,
         val estimatedWidth: Float,
-        val transforms: WordTransforms
+        val transforms: WordTransforms,
+        val isPartOfMyanmarWord: Boolean = false   // true if this token is a non‑final cluster of a Myanmar word
     )
 
     private fun createErrorBitmap(w: Int, h: Int, e: Exception): Bitmap {
