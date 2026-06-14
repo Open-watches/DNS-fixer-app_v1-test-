@@ -1,7 +1,7 @@
 package com.community.dnsfix.handwriting
 
 import android.graphics.Paint
-import kotlin.random.Random
+import java.util.Random
 
 data class WordTransforms(
     val pressure: Float,

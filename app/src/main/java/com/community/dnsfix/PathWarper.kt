@@ -4,29 +4,21 @@ import android.graphics.Path
 import android.graphics.PathMeasure
 import android.graphics.RectF
 import kotlin.math.*
-import kotlin.random.Random
+import java.util.Random
 
 object PathWarper {
-    /**
-     * Warps every contour of the source path using a coherent displacement grid.
-     * Points are first shifted to local bounding‑box coordinates so that
-     * ascenders and descenders map to different grid rows.
-     * The grid is stored in a flat FloatArray to avoid GC pressure.
-     */
     fun warpWithGrid(
         source: Path,
         strength: Float,
         seed: Int,
         tokenLength: Int
     ): Path {
-        // 1. Compute the word's bounding box in canvas space
         val bounds = RectF()
         source.computeBounds(bounds, true)
         val boxWidth = bounds.width()
         val boxHeight = bounds.height()
         if (boxWidth <= 0f || boxHeight <= 0f) return source
 
-        // 2. Adaptive cell size (smaller for short clusters)
         val cellSize = when {
             tokenLength <= 2 -> 12f
             tokenLength <= 4 -> 18f
@@ -35,7 +27,6 @@ object PathWarper {
         val gridCols = max(2, ceil(boxWidth / cellSize).toInt())
         val gridRows = max(2, ceil(boxHeight / cellSize).toInt())
 
-        // 3. Flat displacement grid: single FloatArray, no extra objects
         val totalCells = (gridRows + 1) * (gridCols + 1)
         val gridX = FloatArray(totalCells)
         val gridY = FloatArray(totalCells)
@@ -49,7 +40,6 @@ object PathWarper {
             }
         }
 
-        // Helper: fetch displacement from flat grid
         fun gridValue(x: FloatArray, row: Int, col: Int): Float {
             return x[row * (gridCols + 1) + col]
         }
@@ -72,11 +62,10 @@ object PathWarper {
             for (i in 0..numSamples) {
                 pm.getPosTan(i * realStep, pos, null)
 
-                // ** THE FIX: shift to local bounding‑box coordinates **
+                // Normalize to local bounding-box coordinates
                 val localX = pos[0] - bounds.left
                 val localY = pos[1] - bounds.top
 
-                // Map to grid column/row (now always non‑negative)
                 val col = (localX / cellWidth).coerceIn(0f, gridCols - 1f)
                 val row = (localY / cellHeight).coerceIn(0f, gridRows - 1f)
 
@@ -88,7 +77,6 @@ object PathWarper {
                 val fx = col - c0
                 val fy = row - r0
 
-                // Bilinear interpolation using flat grid access
                 val dx = (1 - fx) * (1 - fy) * gridValue(gridX, r0, c0) +
                          fx * (1 - fy) * gridValue(gridX, r0, c1) +
                          (1 - fx) * fy * gridValue(gridX, r1, c0) +
@@ -98,7 +86,6 @@ object PathWarper {
                          (1 - fx) * fy * gridValue(gridY, r1, c0) +
                          fx * fy * gridValue(gridY, r1, c1)
 
-                // Warp the original canvas‑space point
                 val warpedX = pos[0] + dx
                 val warpedY = pos[1] + dy
 
