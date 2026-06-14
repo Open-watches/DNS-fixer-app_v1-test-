@@ -27,6 +27,7 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.unit.dp
+import androidx.core.content.FileProvider
 import kotlinx.coroutines.launch
 import java.io.File
 import java.io.FileOutputStream
@@ -117,7 +118,6 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    // Save to gallery
                     Button(
                         onClick = {
                             resultBitmap?.let { bitmap ->
@@ -129,7 +129,6 @@ class MainActivity : ComponentActivity() {
                         Text("Save to Gallery")
                     }
 
-                    // Share
                     Button(
                         onClick = {
                             resultBitmap?.let { bitmap ->
@@ -235,7 +234,7 @@ class MainActivity : ComponentActivity() {
             val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
             val shareIntent = Intent(Intent.ACTION_SEND).apply {
                 type = "image/png"
-                putExtra(Intent.EXTRA_STREAM, uri)
+                putExtra(Intent.EXTRA_STREAM, uri as? java.io.Serializable ?: uri)
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             }
             context.startActivity(Intent.createChooser(shareIntent, "Share Handwriting"))
