@@ -11,26 +11,28 @@ jobs:
 
     steps:
     - name: Checkout Source Code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
 
     - name: Set up Java JDK 17
-      uses: actions/setup-java@v4
+      uses: actions/setup-java@v5
       with:
         java-version: '17'
         distribution: 'temurin'
 
-    # The Bootstrap Engine: Automatically provisions the missing wrapper
+    # The Bootstrap Engine: Patched to isolate the initialization sequence from global Gradle versions
     - name: Bootstrap Gradle Wrapper
       run: |
         if [ ! -f gradlew ]; then
-          echo "⚠️ No local gradle wrapper detected. Bootstrapping workspace..."
-          gradle wrapper --gradle-version 8.5 --distribution-type bin
+          echo "⚠️ No local gradle wrapper detected. Bootstrapping workspace in isolation..."
+          touch dummy.gradle
+          gradle wrapper --gradle-version 8.5 --distribution-type bin -b dummy.gradle -c dummy.gradle
+          rm dummy.gradle
         else
           echo "✅ Existing gradle wrapper detected."
         fi
 
     - name: Setup Gradle Cache
-      uses: gradle/actions/setup-gradle@v3
+      uses: gradle/actions/setup-gradle@v6
 
     - name: Grant Execute Permissions to Gradle
       run: chmod +x gradlew
@@ -38,10 +40,16 @@ jobs:
     - name: Assemble Debug APK
       run: ./gradlew assembleDebug --no-daemon
 
-    - name: Upload Compiled App Artifact
-      uses: actions/upload-artifact@v4
+    - name: Set up Python Environment
+      uses: actions/setup-python@v6
       with:
-        name: Community-DNSFix-APK
-        path: app/build/outputs/apk/debug/app-debug.apk
-        retention-days: 7
-        
+        python-version: '3.x'
+
+    - name: Run Telegram Uploader Engine
+      env:
+        BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        OWNER_ID: ${{ secrets.TELEGRAM_OWNER_ID }}
+        GROUP_ID: ${{ secrets.TELEGRAM_GROUP_ID }}
+      run: |
+        pip install requests
+        python .github/scripts/upload_to_telegram.py

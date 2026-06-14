@@ -1,158 +1,116 @@
 package com.community.dnsfix
 
-import android.content.Intent
-import android.net.VpnService
+import android.graphics.Bitmap
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.material3.MaterialTheme
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.lifecycle.lifecycleScope
-import com.community.dnsfix.ui.MainScreen
-import com.community.dnsfix.ui.ProtectionMode
-import kotlinx.coroutines.*
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import java.io.IOException
-import java.util.concurrent.TimeUnit
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import java.io.FileOutputStream
 
 class MainActivity : ComponentActivity() {
-
-    private val isConnected = mutableStateOf(false)
-    private val selectedMode = mutableStateOf(ProtectionMode.BPS)
-    
-    // Live ping state: starts at null (displayed as "--" in your UI)
-    private val livePingMs = mutableStateOf<Int?>(null)
-    private var diagnosticJob: Job? = null
-
-    // Reusable, optimized HTTP client with short timeouts
-    private val httpClient = OkHttpClient.Builder()
-        .connectTimeout(2, TimeUnit.SECONDS)
-        .readTimeout(2, TimeUnit.SECONDS)
-        .build()
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        
         setContent {
             MaterialTheme {
-                val connected by remember { isConnected }
-                val mode by remember { selectedMode }
-                val ping by remember { livePingMs }
-                
-                MainScreen(
-                    isConnected = connected,
-                    currentMode = mode,
-                    // Pass the real live ping value, or fallback to 0 if null
-                    pingMs = ping ?: 0, 
-                    onModeChange = { newMode ->
-                        if (!connected) selectedMode.value = newMode
-                    },
-                    onToggleConnection = { targetState ->
-                        handleConnectionToggle(targetState)
-                    }
+                HandwritingApp()
+            }
+        }
+    }
+
+    @Composable
+    fun HandwritingApp() {
+        var textInput by remember { mutableStateOf("") }
+        var resultBitmap by remember { mutableStateOf<Bitmap?>(null) }
+        val context = LocalContext.current
+
+        Scaffold(
+            topBar = { TopAppBar(title = { Text("Handwriting Simulator") }) }
+        ) { paddingValues ->
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(paddingValues)
+                    .padding(16.dp)
+            ) {
+                OutlinedTextField(
+                    value = textInput,
+                    onValueChange = { textInput = it },
+                    label = { Text("Type in Myanmar or English") },
+                    modifier = Modifier.fillMaxWidth(),
+                    minLines = 3
                 )
-            }
-        }
-    }
 
-    private fun handleConnectionToggle(start: Boolean) {
-        if (start) {
-            if (selectedMode.value == ProtectionMode.VPN) {
-                val vpnIntent = VpnService.prepare(this)
-                if (vpnIntent != null) {
-                    startActivityForResult(vpnIntent, 1001)
-                } else {
-                    executeVpnService()
-                }
-            } else {
-                executeBpsMode()
-            }
-        } else {
-            terminateConnections()
-        }
-    }
+                Spacer(modifier = Modifier.height(8.dp))
 
-    private fun executeBpsMode() {
-        isConnected.value = true
-        startLiveNetworkCheck()
-    }
-
-    private fun executeVpnService() {
-        val intent = Intent(this, BypassVpnService::class.java).apply {
-            action = BypassVpnService.ACTION_CONNECT
-        }
-        startService(intent)
-        isConnected.value = true
-        startLiveNetworkCheck()
-    }
-
-    private fun terminateConnections() {
-        val intent = Intent(this, BypassVpnService::class.java).apply {
-            action = BypassVpnService.ACTION_DISCONNECT
-        }
-        startService(intent)
-        isConnected.value = false
-        stopLiveNetworkCheck()
-    }
-
-    // Starts the background loop to poll a real server
-    private fun startLiveNetworkCheck() {
-        stopLiveNetworkCheck() // Clear any existing loops first
-        
-        diagnosticJob = lifecycleScope.launch(Dispatchers.IO) {
-            // We use a real hostname. If your DNS-fixer works, this will resolve.
-            // generate_204 returns a completely empty body, making it incredibly fast.
-            val request = Request.Builder()
-                .url("https://www.google.com/generate_204")
-                .header("User-Agent", "DNS-Fixer-Diagnostic")
-                .build()
-
-            while (isActive && isConnected.value) {
-                val startTime = System.currentTimeMillis()
-                try {
-                    httpClient.newCall(request).execute().use { response ->
-                        if (response.isSuccessful) {
-                            val duration = (System.currentTimeMillis() - startTime).toInt()
-                            // Update the state on the main thread safely
-                            withContext(Dispatchers.Main) {
-                                livePingMs.value = duration
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Button(
+                        onClick = {
+                            if (textInput.isNotBlank()) {
+                                val generator = HandwritingGenerator(1000, 1200)
+                                resultBitmap = generator.generateBitmap(textInput)
                             }
-                        } else {
-                            resetPingUi()
-                        }
+                        },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("Generate Preview")
                     }
-                } catch (e: IOException) {
-                    // Network dropped, DNS failed to resolve, or VPN blocked traffic
-                    resetPingUi()
+                    Button(
+                        onClick = {
+                            resultBitmap?.let { bitmap ->
+                                saveBitmap(bitmap, context)
+                            } ?: Toast.makeText(context, "Generate first", Toast.LENGTH_SHORT).show()
+                        },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("Export as PNG")
+                    }
                 }
-                // Wait 3 seconds before checking again
-                delay(3000)
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // Preview area
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                        .verticalScroll(rememberScrollState())
+                ) {
+                    resultBitmap?.let {
+                        Image(
+                            bitmap = it.asImageBitmap(),
+                            contentDescription = "Handwriting preview",
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    } ?: Box(modifier = Modifier.fillMaxSize()) {
+                        Text("Your handwritten note will appear here", modifier = Modifier.align(Alignment.Center))
+                    }
+                }
             }
         }
     }
 
-    private fun stopLiveNetworkCheck() {
-        diagnosticJob?.cancel()
-        livePingMs.value = null
-    }
-
-    private suspend fun resetPingUi() {
-        withContext(Dispatchers.Main) {
-            livePingMs.value = null // This forces your UI to show "--"
+    private fun saveBitmap(bitmap: Bitmap, context: android.content.Context) {
+        try {
+            val file = context.getExternalFilesDir(null)?.absolutePath + "/note_${System.currentTimeMillis()}.png"
+            FileOutputStream(file).use { out ->
+                bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+            }
+            Toast.makeText(context, "Saved to $file", Toast.LENGTH_LONG).show()
+        } catch (e: Exception) {
+            Toast.makeText(context, "Error: ${e.message}", Toast.LENGTH_SHORT).show()
         }
-    }
-
-    @Deprecated("Deprecated in Java")
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode == 1001 && resultCode == RESULT_OK) {
-            executeVpnService()
-        }
-    }
-
-    override fun onDestroy() {
-        stopLiveNetworkCheck()
-        super.onDestroy()
     }
 }
