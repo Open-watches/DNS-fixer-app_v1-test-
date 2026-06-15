@@ -145,7 +145,8 @@ class GlyphRenderer(
         textPaint.getTextBounds(text, 0, text.length, bounds)
         if (bounds.width() <= 0 || bounds.height() <= 0) return
 
-        val wordWidth = bounds.width()        val wordHeight = bounds.height()
+        val wordWidth = bounds.width()
+        val wordHeight = bounds.height()
         val padding = ceil(fontSize * 1.6f).toInt()
 
         ensureScratchSize(wordWidth + padding * 2, wordHeight + padding * 2)
@@ -195,6 +196,7 @@ class GlyphRenderer(
         }
         canvas.restore()
     }
+
     private fun drawComplexWordWithSliceWarp(
         canvas: Canvas,
         wp: WordPlacement,
@@ -292,5 +294,6 @@ class GlyphRenderer(
 
     private fun containsComplexScript(text: String): Boolean {
         for (ch in text) if (ch in '\u1000'..'\u109F') return true
-        return false    }
+        return false
+    }
 }
