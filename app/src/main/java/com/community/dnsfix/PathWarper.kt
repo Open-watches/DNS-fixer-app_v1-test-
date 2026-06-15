@@ -7,14 +7,18 @@ import kotlin.math.*
 import java.util.Random
 
 object PathWarper {
+
+    /**
+     * Warps the source path using a coherent displacement grid.
+     * [bounds] is the pre‑computed bounding box of the source path.
+     */
     fun warpWithGrid(
         source: Path,
         strength: Float,
         seed: Int,
-        tokenLength: Int
+        tokenLength: Int,
+        bounds: RectF
     ): Path {
-        val bounds = RectF()
-        source.computeBounds(bounds, true)
         val boxWidth = bounds.width()
         val boxHeight = bounds.height()
         if (boxWidth <= 0f || boxHeight <= 0f) return source
@@ -40,12 +44,12 @@ object PathWarper {
             }
         }
 
-        fun gridValue(x: FloatArray, row: Int, col: Int): Float {
-            return x[row * (gridCols + 1) + col]
-        }
+        fun gridValue(x: FloatArray, row: Int, col: Int): Float =
+            x[row * (gridCols + 1) + col]
 
         val cellWidth = boxWidth / gridCols
         val cellHeight = boxHeight / gridRows
+
         val pm = PathMeasure(source, false)
         val result = Path()
         val pos = FloatArray(2)
@@ -62,12 +66,16 @@ object PathWarper {
             for (i in 0..numSamples) {
                 pm.getPosTan(i * realStep, pos, null)
 
-                // Normalize to local bounding-box coordinates
+                // Normalise to local bounding‑box coordinates
                 val localX = pos[0] - bounds.left
                 val localY = pos[1] - bounds.top
 
-                val col = (localX / cellWidth).coerceIn(0f, gridCols - 1f)
-                val row = (localY / cellHeight).coerceIn(0f, gridRows - 1f)
+                val col = if (cellWidth > 0f)
+                    (localX / cellWidth).coerceIn(0f, gridCols - 1f)
+                else 0f
+                val row = if (cellHeight > 0f)
+                    (localY / cellHeight).coerceIn(0f, gridRows - 1f)
+                else 0f
 
                 val c0 = col.toInt()
                 val r0 = row.toInt()
