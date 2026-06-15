@@ -21,9 +21,9 @@ class HandwritingGenerator(
     private val globalRandom = Random()
     private val pen = PenState()
     private var baselineDrift = 0f
-    private val driftStep = 0.6f              // slightly higher for more movement
-    private val driftClamp = 6.0f             // larger clamp
-    private var lineIndex = 0                 // for sine wander
+    private val driftStep = 0.6f
+    private val driftClamp = 6.0f
+    private var lineIndex = 0
 
     private val layoutEngine = LayoutEngine(
         Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -35,12 +35,40 @@ class HandwritingGenerator(
     )
     private val glyphRenderer = GlyphRenderer(baseInkColor, fontSize)
 
-    // Error logging (unchanged)
-    // ...
+    // ---------- Error logging ----------
+    private var lastErrorMessage: String? = null
+    private var lastErrorStackTrace: String? = null
 
+    private fun logError(msg: String, e: Exception?) {
+        lastErrorMessage = msg + (e?.let { ": ${it.message}" } ?: "")
+        lastErrorStackTrace = e?.stackTraceToString() ?: "No stack trace"
+        context?.let {
+            try {
+                val crashDir = File(it.cacheDir, "handwriting_logs")
+                if (!crashDir.exists()) crashDir.mkdirs()
+                val file = File(crashDir, "error_${System.currentTimeMillis()}.txt")
+                FileOutputStream(file).use { fos ->
+                    fos.write("$msg\n".toByteArray())
+                    fos.write(lastErrorStackTrace!!.toByteArray())
+                }
+            } catch (_: Exception) {}
+        }
+    }
+
+    fun getLastError(): Pair<String?, String?> = Pair(lastErrorMessage, lastErrorStackTrace)
+
+    // ---------- Public API ----------
     fun generateBitmap(text: String): Bitmap = generateBitmap(text, width, height)
+
     fun generateBitmap(text: String, canvasWidth: Int, canvasHeight: Int): Bitmap {
-        // ...
+        return try {
+            lastErrorMessage = null
+            lastErrorStackTrace = null
+            realGenerateBitmap(text, canvasWidth, canvasHeight)
+        } catch (e: Exception) {
+            logError("Generation failed", e)
+            createErrorBitmap(canvasWidth, canvasHeight, e)
+        }
     }
 
     private fun realGenerateBitmap(text: String, w: Int, h: Int): Bitmap {
@@ -94,5 +122,13 @@ class HandwritingGenerator(
         }
     }
 
-    // … error bitmap unchanged
+    private fun createErrorBitmap(w: Int, h: Int, e: Exception): Bitmap {
+        val bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bitmap)
+        canvas.drawColor(Color.WHITE)
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.RED; textSize = 28f }
+        canvas.drawText("Generation failed: ${e.message}", 30f, 100f, paint)
+        canvas.drawText("Check notification for details", 30f, 140f, paint)
+        return bitmap
+    }
 }
