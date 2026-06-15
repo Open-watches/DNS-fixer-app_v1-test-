@@ -1,6 +1,8 @@
 package com.community.dnsfix.handwriting
 
 import java.util.Random
+import kotlin.math.abs
+import kotlin.math.atan2
 
 data class PenState(
     var pressure: Float = 0.88f,
@@ -18,9 +20,34 @@ data class PenState(
     }
 
     /**
+     * Calculates the dynamic stroke width for a specific point on a path.
+     * This creates the "variable width" look of a real pen.
+     * 
+     * @param normalizedSpeed 0.0 (slow/stopped) to 1.0 (fast). 
+     *                        Real pens get thicker when slowing down.
+     * @param curvature 0.0 (straight line) to 1.0 (tight loop). 
+     *                    Writers unconsciously press harder on tight curves.
+     */
+    fun calculateStrokeWidth(normalizedSpeed: Float, curvature: Float = 0f): Float {
+        // Base width derived from the current pressure state (which decays with fatigue)
+        // Adjust the multipliers (3.5f and 2.5f) to fit your canvas scale
+        val baseWidth = 3.5f + (pressure * 2.5f) 
+        
+        // 1. Speed mapping: Slow = thick, Fast = thin
+        val speedInfluence = (1f - normalizedSpeed.coerceIn(0f, 1f)) * 0.8f
+        
+        // 2. Curvature mapping: Tight curves = slightly thicker
+        val curveInfluence = curvature.coerceIn(0f, 1f) * 0.4f
+        
+        // 3. Combine and apply a tiny bit of high-frequency noise (micro-jitter in width)
+        val widthMultiplier = 0.5f + (speedInfluence + curveInfluence)
+        val microNoise = (kotlin.random.Random.nextFloat() - 0.5f) * 0.4f 
+        
+        return (baseWidth * widthMultiplier) + microNoise
+    }
+
+    /**
      * Called after every token – emulates the JS engine's `pen.update()`.
-     * @param rest true after line breaks, false during writing.
-     * @param isMyanmar true if the current token is Myanmar (adjusts error probability).
      */
     fun update(rest: Boolean, isMyanmar: Boolean, random: Random) {
         if (rest) {
