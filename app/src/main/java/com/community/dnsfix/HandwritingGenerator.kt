@@ -33,8 +33,8 @@ class HandwritingGenerator(
         marginRight
     )
     private val glyphRenderer = GlyphRenderer(baseInkColor, fontSize)
-    private val paperRenderer = PaperRenderer(width, height)
 
+    // Error logging
     private var lastErrorMessage: String? = null
     private var lastErrorStackTrace: String? = null
     private fun logError(msg: String, e: Exception?) {
@@ -68,12 +68,14 @@ class HandwritingGenerator(
     }
 
     private fun realGenerateBitmap(text: String, w: Int, h: Int): Bitmap {
-        pen.pressure = 0.7f; pen.slantOffset = 0f; pen.tremor = 1.0f; pen.fatigue = 0f
+        pen.pressure = 0.88f; pen.slantOffset = 0f; pen.tremor = 1.0f; pen.fatigue = 0f
+        pen.xDrift = 0f; pen.yDrift = 0f; pen.spacingBias = 0f; pen.errorAccumulation = 0f
         baselineDrift = 0f
 
         val bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bitmap)
-        paperRenderer.draw(canvas)
+        // Paper background
+        PaperRenderer(w, h).draw(canvas)
         PaperRenderer.drawLinesAndMargin(canvas, lineSpacing, marginLeft, w.toFloat(), h.toFloat())
 
         if (text.isNotEmpty()) layoutAndDraw(canvas, text, w)
@@ -90,11 +92,12 @@ class HandwritingGenerator(
             if (line.isEmpty()) {
                 y += lineSpacing * (0.9f + globalRandom.nextFloat() * 0.2f)
                 baselineDrift += PenState.gaussian(0f, driftStep, globalRandom).coerceIn(-driftClamp, driftClamp)
-                pen.update(rest = true, random = globalRandom)
+                pen.update(rest = true, isMyanmar = false, random = globalRandom)
                 continue
             }
             var x = marginLeft + 20f + PenState.gaussian(0f, 2.5f, globalRandom)
             for ((index, wp) in line.withIndex()) {
+                val isMyanmar = wp.text.any { it in '\u1000'..'\u109F' }
                 glyphRenderer.drawWord(canvas, wp, x, y, baselineDrift, globalSlant, customTypeface)
                 x += wp.estimatedWidth
                 if (index < line.size - 1) {
@@ -103,11 +106,11 @@ class HandwritingGenerator(
                         x += 6f + PenState.gaussian(0f, 2.5f, globalRandom).coerceIn(-4f, 4f)
                     }
                 }
-                pen.update(rest = false, random = globalRandom)
+                pen.update(rest = false, isMyanmar = isMyanmar, random = globalRandom)
             }
             y += lineSpacing * (0.9f + globalRandom.nextFloat() * 0.2f)
             baselineDrift += PenState.gaussian(0f, driftStep, globalRandom).coerceIn(-driftClamp, driftClamp)
-            pen.update(rest = true, random = globalRandom)
+            pen.update(rest = true, isMyanmar = false, random = globalRandom)
         }
     }
 
