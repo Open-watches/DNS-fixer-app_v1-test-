@@ -4,12 +4,17 @@ import android.graphics.*
 import kotlin.math.tan
 import java.util.Random
 
-class GlyphRenderer(private val baseInkColor: Int) {
+class GlyphRenderer(
+    private val baseInkColor: Int,
+    private val fontSize: Float          // ← NEW parameter
+) {
     private val spreadPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.FILL
-        xfermode = PorterDuffXfermode(PorterDuff.Mode.DARKEN)
     }
-    private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
+    private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL
+        textSize = fontSize               // ← SET THE SIZE HERE
+    }
 
     fun drawWord(
         canvas: Canvas,
@@ -27,19 +32,17 @@ class GlyphRenderer(private val baseInkColor: Int) {
         val baseGreen = Color.green(baseInkColor)
         val baseBlue = Color.blue(baseInkColor)
         val alpha = (150 + t.pressure * 105).toInt().coerceIn(40, 255)
-        val density = (0.5f + t.pressure * 0.5f).coerceIn(0.5f, 1f)
 
         val washRand = Random((wp.seed and 0x7FFFFFFF).toLong())
         val washR = (baseRed + PenState.gaussian(0f, 8f, washRand)).coerceIn(0f, 255f)
         val washG = (baseGreen + PenState.gaussian(0f, 8f, washRand)).coerceIn(0f, 255f)
         val washB = (baseBlue + PenState.gaussian(0f, 8f, washRand)).coerceIn(0f, 255f)
 
-        val finalColor = Color.argb(alpha, (washR * density).toInt(), (washG * density).toInt(), (washB * density).toInt())
+        val finalColor = Color.argb(alpha, washR.toInt(), washG.toInt(), washB.toInt())
         textPaint.color = finalColor
 
         val isComplex = containsComplexScript(wp.text)
 
-        // Common transformation matrix
         canvas.save()
         val matrix = Matrix()
         val slantDeg = globalSlant + t.slantOffset
@@ -51,7 +54,6 @@ class GlyphRenderer(private val baseInkColor: Int) {
         canvas.concat(matrix)
 
         if (isComplex) {
-            // Use native text rendering for complex scripts (Myanmar, etc.)
             drawTextFallback(canvas, wp.text, wp.seed, alpha, washR, washG, washB)
         } else {
             val rawPath = Path()
@@ -60,10 +62,8 @@ class GlyphRenderer(private val baseInkColor: Int) {
             rawPath.computeBounds(bounds, true)
 
             if (rawPath.isEmpty || bounds.width() < 2f || bounds.height() < 2f) {
-                // Path is degenerate – fall back to native text
                 drawTextFallback(canvas, wp.text, wp.seed, alpha, washR, washG, washB)
             } else {
-                // Normal warped path rendering
                 val baseStrength = when {
                     wp.text.length <= 2 -> 2.5f
                     wp.text.length <= 4 -> 2.0f
@@ -94,9 +94,6 @@ class GlyphRenderer(private val baseInkColor: Int) {
         canvas.restore()
     }
 
-    // ---------------------------------------------------------------
-    // Private helper – draws text natively with a simple ink spread
-    // ---------------------------------------------------------------
     private fun drawTextFallback(
         canvas: Canvas,
         text: String,
@@ -124,8 +121,7 @@ class GlyphRenderer(private val baseInkColor: Int) {
 
     private fun containsComplexScript(text: String): Boolean {
         for (ch in text) {
-            if (ch in '\u1000'..'\u109F') return true   // Myanmar
-            // Add other script blocks here as needed
+            if (ch in '\u1000'..'\u109F') return true
         }
         return false
     }

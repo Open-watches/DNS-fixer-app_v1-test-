@@ -32,7 +32,7 @@ class HandwritingGenerator(
         width.toFloat(),
         marginRight
     )
-    private val glyphRenderer = GlyphRenderer(baseInkColor)
+    private val glyphRenderer = GlyphRenderer(baseInkColor, fontSize)
     private val paperRenderer = PaperRenderer(width, height)
 
     private var lastErrorMessage: String? = null
