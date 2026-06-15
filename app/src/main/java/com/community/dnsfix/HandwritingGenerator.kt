@@ -5,6 +5,7 @@ import android.graphics.*
 import java.io.File
 import java.io.FileOutputStream
 import java.util.Random
+import kotlin.math.sin
 
 class HandwritingGenerator(
     private val width: Int = 1000,
