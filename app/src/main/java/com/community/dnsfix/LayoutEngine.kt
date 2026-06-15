@@ -96,6 +96,7 @@ class LayoutEngine(
 
             // ---- newline as its own packet ----
             if (tok.text == "\n") {
+                pen.update(rest = true, isMyanmar = false, random = globalRandom)
                 val seed = (tok.text.hashCode() * 31 + wordIndex) and 0x7fffffff
                 wordIndex++
                 val transforms = dummyTransforms()
@@ -113,7 +114,7 @@ class LayoutEngine(
                     val cluster = tokens[i]
                     wordClusters.add(cluster)
                     i++
-                    if (cluster.isLastInMyanmarWord) break   // ← FIX: word boundary
+                    if (cluster.isLastInMyanmarWord) break   // word boundary
                 }
 
                 // Generate placements for the whole word
@@ -133,13 +134,16 @@ class LayoutEngine(
                     wordIndex++
                     val rand = Random(seed.toLong())
 
+                    // Update pen state before computing transforms (except rest)
+                    pen.update(rest = false, isMyanmar = true, random = globalRandom)
+
                     val pressure = (pen.pressure + PenState.gaussian(0f, 0.05f, rand)).coerceIn(0.4f, 0.95f)
                     val scaleX = (0.94f + PenState.gaussian(0f, 0.04f, rand)).coerceIn(0.85f, 1.05f)
                     val scaleY = (1.00f + PenState.gaussian(0f, 0.03f, rand)).coerceIn(0.95f, 1.08f)
                     val slantOffset = pen.slantOffset + PenState.gaussian(0f, 3.0f, rand)
                     val rotation = PenState.gaussian(0f, 2.0f + pen.fatigue * 1.5f, rand)
-                    val dx = PenState.gaussian(0f, 2.0f, rand)
-
+                    // Horizontal jitter enhanced by error accumulation and continuous x drift
+                    val dx = PenState.gaussian(0f, 2.0f + pen.errorAccumulation, rand) + pen.xDrift * 0.35f
                     // Coherent baseline: all clusters share wordBaseDy + tiny micro‑jitter
                     val dy = wordBaseDy + PenState.gaussian(0f, 0.3f, rand)
 
@@ -147,7 +151,9 @@ class LayoutEngine(
                     val transforms = WordTransforms(pressure, scaleX, scaleY, slantOffset, rotation, dx, dy, tremor)
 
                     val nativeWidth = paint.measureText(cluster.text)
-                    var width = nativeWidth * scaleX
+                    // Incorporate spacing bias from pen state
+                    val spacingBias = pen.spacingBias * 1.2f
+                    var width = nativeWidth * scaleX + spacingBias
 
                     // Tracking squeeze for non‑final clusters
                     if (ci < wordClusters.size - 1) {
@@ -157,7 +163,6 @@ class LayoutEngine(
                     val isPart = ci < wordClusters.size - 1
                     placements.add(WordPlacement(cluster.text, seed, width, transforms, isPart))
                     totalWidth += width
-                    pen.evolve(globalRandom)
                 }
 
                 packets.add(WordPacket(placements, totalWidth))
@@ -167,22 +172,25 @@ class LayoutEngine(
                 wordIndex++
                 val rand = Random(seed.toLong())
 
+                // Update pen state for this token (not a rest)
+                pen.update(rest = false, isMyanmar = false, random = globalRandom)
+
                 val pressure = (pen.pressure + PenState.gaussian(0f, 0.05f, rand)).coerceIn(0.4f, 0.95f)
                 val scaleX = (0.94f + PenState.gaussian(0f, 0.04f, rand)).coerceIn(0.85f, 1.05f)
                 val scaleY = (1.00f + PenState.gaussian(0f, 0.03f, rand)).coerceIn(0.95f, 1.08f)
                 val slantOffset = pen.slantOffset + PenState.gaussian(0f, 3.0f, rand)
                 val rotation = PenState.gaussian(0f, 2.0f + pen.fatigue * 1.5f, rand)
-                val dx = PenState.gaussian(0f, 2.0f, rand)
+                val dx = PenState.gaussian(0f, 2.0f + pen.errorAccumulation, rand) + pen.xDrift * 0.35f
                 val dy = PenState.gaussian(0f, 2.0f, rand)
                 val tremor = pen.tremor * (1f + pen.fatigue * 0.5f)
 
                 val transforms = WordTransforms(pressure, scaleX, scaleY, slantOffset, rotation, dx, dy, tremor)
                 val nativeWidth = paint.measureText(tok.text)
-                val width = nativeWidth * scaleX
+                val spacingBias = pen.spacingBias * 1.2f
+                val width = nativeWidth * scaleX + spacingBias
 
                 val placement = WordPlacement(tok.text, seed, width, transforms, false)
                 packets.add(WordPacket(listOf(placement), width))
-                pen.evolve(globalRandom)
                 i++
             }
         }
