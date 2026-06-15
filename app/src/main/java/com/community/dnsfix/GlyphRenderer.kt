@@ -6,14 +6,14 @@ import java.util.Random
 
 class GlyphRenderer(
     private val baseInkColor: Int,
-    private val fontSize: Float          // ← NEW parameter
+    private val fontSize: Float
 ) {
     private val spreadPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.FILL
     }
     private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.FILL
-        textSize = fontSize               // ← SET THE SIZE HERE
+        textSize = fontSize
     }
 
     fun drawWord(
@@ -41,6 +41,9 @@ class GlyphRenderer(
         val finalColor = Color.argb(alpha, washR.toInt(), washG.toInt(), washB.toInt())
         textPaint.color = finalColor
 
+        // ---------- Spread radius grows with pressure (simulates thicker strokes) ----------
+        val spreadBaseStd = 0.3f + t.pressure * 0.7f   // range ~0.58–0.96
+
         val isComplex = containsComplexScript(wp.text)
 
         canvas.save()
@@ -54,7 +57,7 @@ class GlyphRenderer(
         canvas.concat(matrix)
 
         if (isComplex) {
-            drawTextFallback(canvas, wp.text, wp.seed, alpha, washR, washG, washB)
+            drawTextFallback(canvas, wp.text, wp.seed, alpha, washR, washG, washB, spreadBaseStd)
         } else {
             val rawPath = Path()
             textPaint.getTextPath(wp.text, 0, wp.text.length, 0f, 0f, rawPath)
@@ -62,7 +65,7 @@ class GlyphRenderer(
             rawPath.computeBounds(bounds, true)
 
             if (rawPath.isEmpty || bounds.width() < 2f || bounds.height() < 2f) {
-                drawTextFallback(canvas, wp.text, wp.seed, alpha, washR, washG, washB)
+                drawTextFallback(canvas, wp.text, wp.seed, alpha, washR, washG, washB, spreadBaseStd)
             } else {
                 val baseStrength = when {
                     wp.text.length <= 2 -> 2.5f
@@ -77,8 +80,8 @@ class GlyphRenderer(
 
                 val spreadRand = Random((wp.seed * 31).toLong())
                 for (i in 0..7) {
-                    val offX = PenState.gaussian(0f, 0.6f, spreadRand)
-                    val offY = PenState.gaussian(0f, 0.6f, spreadRand)
+                    val offX = PenState.gaussian(0f, spreadBaseStd, spreadRand)
+                    val offY = PenState.gaussian(0f, spreadBaseStd, spreadRand)
                     spreadPaint.color = Color.argb(
                         (alpha * 0.15f * (1f - i / 8f)).toInt().coerceIn(5, 30),
                         washR.toInt(), washG.toInt(), washB.toInt()
@@ -101,12 +104,13 @@ class GlyphRenderer(
         alpha: Int,
         washR: Float,
         washG: Float,
-        washB: Float
+        washB: Float,
+        spreadStd: Float
     ) {
         val spreadRand = Random((seed * 31).toLong())
         for (i in 0..3) {
-            val offX = PenState.gaussian(0f, 0.4f, spreadRand)
-            val offY = PenState.gaussian(0f, 0.4f, spreadRand)
+            val offX = PenState.gaussian(0f, spreadStd * 0.6f, spreadRand)
+            val offY = PenState.gaussian(0f, spreadStd * 0.6f, spreadRand)
             spreadPaint.color = Color.argb(
                 (alpha * 0.12f).toInt().coerceIn(5, 20),
                 washR.toInt(), washG.toInt(), washB.toInt()
