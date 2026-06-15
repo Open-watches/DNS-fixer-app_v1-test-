@@ -8,7 +8,6 @@ class GlyphRenderer(
     private val baseInkColor: Int,
     private val fontSize: Float
 ) {
-    // Paint that forces bilinear filtering on bitmap draws
     private val slicePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         isFilterBitmap = true
     }
@@ -17,7 +16,6 @@ class GlyphRenderer(
         textSize = fontSize
     }
 
-    // Reusable scratch bitmap – dynamically resized if needed
     private var scratchBitmap = Bitmap.createBitmap(600, 300, Bitmap.Config.ARGB_8888)
     private var scratchCanvas = Canvas(scratchBitmap)
 
@@ -47,8 +45,8 @@ class GlyphRenderer(
 
         val baseRed = Color.red(baseInkColor)
         val baseGreen = Color.green(baseInkColor)
-        val baseBlue = Color.blue(baseInkColor)        val alpha = (150 + t.pressure * 105).toInt().coerceIn(40, 255)
-
+        val baseBlue = Color.blue(baseInkColor)
+        val alpha = (150 + t.pressure * 105).toInt().coerceIn(40, 255)
         val washRand = Random((wp.seed and 0x7FFFFFFF).toLong())
         val washR = (baseRed + PenState.gaussian(0f, 8f, washRand)).coerceIn(0f, 255f)
         val washG = (baseGreen + PenState.gaussian(0f, 8f, washRand)).coerceIn(0f, 255f)
@@ -77,10 +75,6 @@ class GlyphRenderer(
         canvas.restore()
     }
 
-    /**
-     * NEW: Renders a Path using overlapping circles with variable stroke width.
-     * This simulates real pen pressure and speed variation.
-     */
     private fun drawPathWithVariableStrokes(
         canvas: Canvas,
         path: Path,
@@ -96,16 +90,13 @@ class GlyphRenderer(
         val tan = FloatArray(2)
         
         val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            style = Paint.Style.FILL            color = Color.argb(alpha, washR.toInt(), washG.toInt(), washB.toInt())
-            // Optional: slight blur for ink bleed into paper
-            maskFilter = BlurMaskFilter(0.6f, BlurMaskFilter.Blur.NORMAL) 
+            style = Paint.Style.FILL
+            color = Color.argb(alpha, washR.toInt(), washG.toInt(), washB.toInt())
         }
         
         do {
             val length = pm.length
-            if (length == 0f) continue
-            
-            // High resolution sampling for smooth circles
+            if (length == 0f) continue            
             val stepSize = 1.2f 
             val numPoints = ceil(length / stepSize).toInt().coerceAtLeast(2)
             
@@ -118,22 +109,15 @@ class GlyphRenderer(
                 val currentX = pos[0]
                 val currentY = pos[1]
                 
-                // Calculate curvature (change in angle) to simulate speed
-                // Writers slow down on tight curves, making the ink thicker
                 val currentAngle = if (tan[0] != 0f || tan[1] != 0f) atan2(tan[1], tan[0]) else prevAngle
                 var angleDelta = abs(currentAngle - prevAngle)
                 if (angleDelta > PI.toFloat()) angleDelta = (2 * PI).toFloat() - angleDelta
                 
-                // Map 90-degree turn to 1.0 curvature
                 val curvature = (angleDelta / (PI.toFloat() * 0.5f)).coerceIn(0f, 1f)
-                
-                // Proxy for speed: straight lines = fast (thin), curves = slow (thick)
                 val normalizedSpeed = 1f - curvature 
                 
-                // Get variable stroke width from PenState
                 val strokeWidth = penState.calculateStrokeWidth(normalizedSpeed, curvature)
                 
-                // Tapering: thin out the start and end of every stroke contour
                 val progress = i.toFloat() / numPoints
                 var taperMultiplier = 1f
                 if (progress < 0.15f) taperMultiplier = progress / 0.15f
@@ -141,16 +125,13 @@ class GlyphRenderer(
                 
                 val finalRadius = (strokeWidth * 0.5f * taperMultiplier).coerceAtLeast(0.2f)
                 
-                // Draw the overlapping circle
                 canvas.drawCircle(currentX, currentY, finalRadius, strokePaint)
                 
                 prevAngle = currentAngle
-            }        } while (pm.nextContour())
+            }
+        } while (pm.nextContour())
     }
 
-    /**
-     * UPDATED: Now extracts text as a Path, warps it, and draws with variable strokes.
-     */
     private fun drawTextWithSliceWarp(
         canvas: Canvas,
         text: String,
@@ -164,8 +145,7 @@ class GlyphRenderer(
         textPaint.getTextBounds(text, 0, text.length, bounds)
         if (bounds.width() <= 0 || bounds.height() <= 0) return
 
-        val wordWidth = bounds.width()
-        val wordHeight = bounds.height()
+        val wordWidth = bounds.width()        val wordHeight = bounds.height()
         val padding = ceil(fontSize * 1.6f).toInt()
 
         ensureScratchSize(wordWidth + padding * 2, wordHeight + padding * 2)
@@ -174,26 +154,22 @@ class GlyphRenderer(
         val textX = padding.toFloat() - bounds.left
         val textY = padding.toFloat() - bounds.top
 
-        // --- NEW PATH RENDERING PIPELINE ---
         val textPath = Path()
         textPaint.getTextPath(text, 0, text.length, textX, textY, textPath)
         
         val boundsF = RectF()
         textPath.computeBounds(boundsF, true)
         
-        // Apply your existing grid warper to the actual geometry
         val warpedPath = PathWarper.warpWithGrid(textPath, 1.5f, seed, text.length, boundsF)
         
-        // Draw with variable strokes instead of flat text
         val penState = PenState()
         penState.update(false, false, Random(seed.toLong()))
         drawPathWithVariableStrokes(scratchCanvas, warpedPath, seed, penState, alpha, washR, washG, washB)
-        // -------------------------------------
 
-        // Slice the scratch bitmap with sine-wave offset (unchanged)
         val sliceHeight = 2
         val topY = max(0, textY.toInt() - padding)
         val bottomY = min(scratchBitmap.height, textY.toInt() + padding)
+
         val rand = Random(seed.toLong())
         val waveSeedX = rand.nextFloat() * 10f
         val freqX = 0.22f + rand.nextFloat() * 0.12f
@@ -219,10 +195,6 @@ class GlyphRenderer(
         }
         canvas.restore()
     }
-
-    /**
-     * UPDATED: Now extracts clusters as Paths, warps them, and draws with variable strokes.
-     */
     private fun drawComplexWordWithSliceWarp(
         canvas: Canvas,
         wp: WordPlacement,
@@ -243,6 +215,7 @@ class GlyphRenderer(
         val clusterRand = Random(wp.seed.toLong())
         var totalWidth = 0f
         var maxHeight = 0f
+
         data class ClusterLayout(val text: String, val sx: Float, val sy: Float, val width: Float)
         val layouts = mutableListOf<ClusterLayout>()
 
@@ -270,9 +243,7 @@ class GlyphRenderer(
         for (layout in layouts) {
             wordCanvas.save()
             wordCanvas.translate(cursorX, baselineY)
-            wordCanvas.scale(layout.sx, layout.sy)
-            
-            // --- NEW PATH RENDERING PIPELINE ---
+            wordCanvas.scale(layout.sx, layout.sy)            
             val clusterPath = Path()
             paint.getTextPath(layout.text, 0, layout.text.length, 0f, 0f, clusterPath)
             
@@ -285,14 +256,13 @@ class GlyphRenderer(
             val penState = PenState()
             penState.update(false, true, Random(clusterSeed.toLong()))
             drawPathWithVariableStrokes(wordCanvas, warpedClusterPath, clusterSeed, penState, alpha, washR, washG, washB)
-            // -------------------------------------
             
             wordCanvas.restore()
             cursorX += layout.width + 2f
         }
 
-        // Apply slice warp to the assembled word bitmap (unchanged)
-        val sliceHeight = 2        val rand = Random(wp.seed.toLong())
+        val sliceHeight = 2
+        val rand = Random(wp.seed.toLong())
         val waveSeedX = rand.nextFloat() * 10f
         val freqX = 0.2f + rand.nextFloat() * 0.1f
         val ampX = 0.5f + rand.nextFloat() * 0.5f
@@ -322,6 +292,5 @@ class GlyphRenderer(
 
     private fun containsComplexScript(text: String): Boolean {
         for (ch in text) if (ch in '\u1000'..'\u109F') return true
-        return false
-    }
+        return false    }
 }
