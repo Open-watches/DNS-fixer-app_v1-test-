@@ -29,7 +29,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
-import com.community.dnsfix.handwriting.HandwritingGenerator   // explicit import
+import com.community.dnsfix.handwriting.HandwritingGenerator
 import kotlinx.coroutines.launch
 import java.io.File
 import java.io.FileOutputStream
@@ -48,6 +48,11 @@ class MainActivity : ComponentActivity() {
     @Composable
     fun HandwritingApp() {
         var textInput by remember { mutableStateOf("") }
+        
+        // Metadata fields for absolute canvas positioning
+        var pageNumberInput by remember { mutableStateOf("1") }
+        var dateInput by remember { mutableStateOf("16/6/2026") }
+        
         var resultBitmap by remember { mutableStateOf<Bitmap?>(null) }
         val context = LocalContext.current
         val clipboardManager = LocalClipboardManager.current
@@ -59,7 +64,7 @@ class MainActivity : ComponentActivity() {
         var generationFailed by remember { mutableStateOf(false) }
 
         Scaffold(
-            topBar = { TopAppBar(title = { Text("Handwriting Simulator") }) },
+            topBar = { TopAppBar(title = { Text("Physical Notebook Simulator") }) },
             snackbarHost = { SnackbarHost(snackbarHostState) }
         ) { paddingValues ->
             Column(
@@ -68,21 +73,54 @@ class MainActivity : ComponentActivity() {
                     .padding(paddingValues)
                     .padding(16.dp)
             ) {
+                // Main Flowing Text Field
                 OutlinedTextField(
                     value = textInput,
                     onValueChange = { textInput = it },
-                    label = { Text("Type your note (Myanmar supported)") },
+                    label = { Text("Main Content (Flows within lines)") },
                     modifier = Modifier.fillMaxWidth(),
-                    minLines = 3
+                    minLines = 4
                 )
 
                 Spacer(modifier = Modifier.height(8.dp))
 
+                // Out-of-Bounds Absolute Elements Input Row
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedTextField(
+                        value = dateInput,
+                        onValueChange = { dateInput = it },
+                        label = { Text("Header/Date") },
+                        modifier = Modifier.weight(1f),
+                        singleLine = true
+                    )
+                    OutlinedTextField(
+                        value = pageNumberInput,
+                        onValueChange = { pageNumberInput = it },
+                        label = { Text("Page No.") },
+                        modifier = Modifier.weight(0.5f),
+                        singleLine = true
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // Generation Action Trigger
                 Button(
                     onClick = {
                         if (textInput.isNotBlank()) {
-                            val generator = HandwritingGenerator(1000, 1200, context)
-                            resultBitmap = generator.generateBitmap(textInput)
+                            // Upgraded to standard physical composition book size (1600x2200) for sharp print resolution
+                            val generator = HandwritingGenerator(1600, 2200, context)
+                            
+                            // Passing both text stream and absolute placement metadata tags
+                            resultBitmap = generator.generateBitmap(
+                                text = textInput,
+                                pageNumber = pageNumberInput,
+                                dateText = dateInput
+                            )
+                            
                             val (msg, trace) = generator.getLastError()
                             if (msg != null) {
                                 lastErrorMsg = msg
@@ -94,10 +132,8 @@ class MainActivity : ComponentActivity() {
                                         actionLabel = "Copy Log"
                                     )
                                     if (result == SnackbarResult.ActionPerformed) {
-                                        trace?.let { t ->   // explicit parameter name
-                                            clipboardManager.setText(
-                                                buildAnnotatedString { append(t) }
-                                            )
+                                        trace?.let { t ->
+                                            clipboardManager.setText(buildAnnotatedString { append(t) })
                                             Toast.makeText(context, "Error log copied", Toast.LENGTH_SHORT).show()
                                         }
                                     }
@@ -113,31 +149,30 @@ class MainActivity : ComponentActivity() {
                     },
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text("Generate Handwriting")
+                    Text("Render Absolute Document")
                 }
 
                 Spacer(modifier = Modifier.height(8.dp))
 
+                // Utility Management Bar
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     Button(
                         onClick = {
-                            resultBitmap?.let { bitmap ->
-                                saveToGallery(bitmap, context)
-                            } ?: Toast.makeText(context, "Generate first", Toast.LENGTH_SHORT).show()
+                            resultBitmap?.let { bitmap -> saveToGallery(bitmap, context) }
+                                ?: Toast.makeText(context, "Generate first", Toast.LENGTH_SHORT).show()
                         },
                         modifier = Modifier.weight(1f)
                     ) {
-                        Text("Save to Gallery")
+                        Text("Save Gallery")
                     }
 
                     Button(
                         onClick = {
-                            resultBitmap?.let { bitmap ->
-                                shareBitmap(bitmap, context)
-                            } ?: Toast.makeText(context, "Generate first", Toast.LENGTH_SHORT).show()
+                            resultBitmap?.let { bitmap -> shareBitmap(bitmap, context) }
+                                ?: Toast.makeText(context, "Generate first", Toast.LENGTH_SHORT).show()
                         },
                         modifier = Modifier.weight(1f),
                         enabled = resultBitmap != null
@@ -150,8 +185,8 @@ class MainActivity : ComponentActivity() {
                     if (generationFailed) {
                         Button(
                             onClick = {
-                                val generator = HandwritingGenerator(1000, 1200, context)
-                                resultBitmap = generator.generateBitmap(textInput)
+                                val generator = HandwritingGenerator(1600, 2200, context)
+                                resultBitmap = generator.generateBitmap(textInput, pageNumberInput, dateInput)
                                 val (msg, trace) = generator.getLastError()
                                 if (msg != null) {
                                     lastErrorMsg = msg
@@ -163,9 +198,7 @@ class MainActivity : ComponentActivity() {
                                         )
                                         if (result == SnackbarResult.ActionPerformed) {
                                             trace?.let { t ->
-                                                clipboardManager.setText(
-                                                    buildAnnotatedString { append(t) }
-                                                )
+                                                clipboardManager.setText(buildAnnotatedString { append(t) })
                                                 Toast.makeText(context, "Error log copied", Toast.LENGTH_SHORT).show()
                                             }
                                         }
@@ -179,13 +212,13 @@ class MainActivity : ComponentActivity() {
                             modifier = Modifier.weight(0.4f)
                         ) {
                             Icon(Icons.Default.Refresh, contentDescription = "Retry")
-                            Text("Retry")
                         }
                     }
                 }
 
                 Spacer(modifier = Modifier.height(12.dp))
 
+                // Live Preview Panel
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()

@@ -3,10 +3,23 @@ package com.community.dnsfix.handwriting
 import android.graphics.*
 import android.os.Build
 
-class PaperRenderer(private val width: Int, private val height: Int) {
+class PaperRenderer(private var width: Int, private var height: Int) {
     private var paperShader: Shader? = null
 
     init {
+        initializeShader()
+    }
+
+    /** Re-initializes the shader dimensions if the paper size changes dynamically. */
+    fun updateDimensions(newWidth: Int, newHeight: Int) {
+        if (width != newWidth || height != newHeight) {
+            this.width = newWidth
+            this.height = newHeight
+            initializeShader()
+        }
+    }
+
+    private fun initializeShader() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             try {
                 paperShader = android.graphics.RuntimeShader("""
@@ -32,16 +45,20 @@ class PaperRenderer(private val width: Int, private val height: Int) {
     }
 
     private val fallbackShader: Shader by lazy {
-        val noiseSize = 256
+        val noiseSize = 128 // Tiling 128x128 saves 75% memory allocations over 256x256
         val noiseBitmap = Bitmap.createBitmap(noiseSize, noiseSize, Bitmap.Config.ARGB_8888)
-        val canvas = Canvas(noiseBitmap)
+        
+        // Allocate a flat array to completely bypass JNI overhead loops
+        val pixels = IntArray(noiseSize * noiseSize)
         val rand = kotlin.random.Random
-        for (x in 0 until noiseSize) {
-            for (y in 0 until noiseSize) {
-                val grain = (rand.nextFloat() * 20).toInt()
-                noiseBitmap.setPixel(x, y, Color.argb(grain, 0xF9, 0xF6, 0xF0))
-            }
+        
+        for (i in pixels.indices) {
+            val grain = (rand.nextFloat() * 20).toInt()
+            pixels[i] = Color.argb(grain, 0xF9, 0xF6, 0xF0)
         }
+        
+        // Single native memory execution transfer across the JNI bridge
+        noiseBitmap.setPixels(pixels, 0, noiseSize, 0, 0, noiseSize, noiseSize)
         BitmapShader(noiseBitmap, Shader.TileMode.REPEAT, Shader.TileMode.REPEAT)
     }
 
@@ -62,15 +79,34 @@ class PaperRenderer(private val width: Int, private val height: Int) {
     }
 
     companion object {
-        fun drawLinesAndMargin(canvas: Canvas, lineSpacing: Float, marginLeft: Float, width: Float, height: Float) {
-            val linePaint = Paint().apply { color = Color.parseColor("#A5C6E8"); strokeWidth = 2f }
-            val marginPaint = Paint().apply { color = Color.parseColor("#E8A5A5"); strokeWidth = 3f }
-            var y = lineSpacing
-            while (y < height) {
+        /**
+         * Draws realistic ruled lines and page guidelines, leaving a pristine top 
+         * and bottom margin blank space for out-of-bounds components (e.g. page numbers).
+         */
+        fun drawLinesAndMargin(
+            canvas: Canvas,
+            width: Float,
+            height: Float,
+            marginTop: Float,
+            marginBottom: Float,
+            marginLeft: Float,
+            lineSpacing: Float
+        ) {
+            val linePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#A5C6E8"); strokeWidth = 2f }
+            val marginPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#E8A5A5"); strokeWidth = 3f }
+            
+            // Render ruled notebook lines strictly within text flow bounds
+            var y = marginTop + lineSpacing
+            val maxLineY = height - marginBottom
+
+            while (y < maxLineY) {
+                // Your excellent sine-wave wiggle remains perfectly preserved
                 val wiggle = kotlin.math.sin(y * 0.02f) * 1.5f
                 canvas.drawLine(wiggle, y, width + wiggle, y, linePaint)
                 y += lineSpacing
             }
+
+            // Draw vertical margin binder line line rule
             canvas.drawLine(marginLeft, 0f, marginLeft, height, marginPaint)
         }
     }

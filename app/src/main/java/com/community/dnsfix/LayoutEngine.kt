@@ -28,19 +28,19 @@ private data class WordPacket(
     val totalWidth: Float
 )
 
-class LayoutEngine(
-    private val paint: Paint,
-    private val pageWidth: Float,
-    private val marginRight: Float
-) {
+class LayoutEngine(private val paint: Paint) {
 
     /**
      * Returns lines of [WordPlacement]s, respecting Myanmar word integrity.
-     * No Myanmar word will ever be split across two lines.
+     * @param tokens The parsed text stream.
+     * @param pen The ongoing pen mechanics state.
+     * @param wrapWidth The maximum allowable width for a single line of flowing text (e.g., pageWidth - marginLeft - marginRight).
+     * @param globalRandom Shared random entropy source.
      */
     fun computePlacements(
         tokens: List<TokenWithType>,
         pen: PenState,
+        wrapWidth: Float,
         globalRandom: Random
     ): List<List<WordPlacement>> {
 
@@ -62,12 +62,13 @@ class LayoutEngine(
                 continue
             }
 
-            // If the whole packet fits, add it to the current line
-            if (currentWidth + packet.totalWidth <= pageWidth - marginRight || currentLine.isEmpty()) {
+            // If the whole packet fits within the wrap budget, or if the current line is completely empty
+            // (prevents infinite loop if a single compound word is wider than the column width)
+            if (currentWidth + packet.totalWidth <= wrapWidth || currentLine.isEmpty()) {
                 currentLine.addAll(packet.placements)
                 currentWidth += packet.totalWidth
             } else {
-                // Packet doesn't fit → start a new line
+                // Packet doesn't fit → start a new line gracefully
                 lines.add(currentLine)
                 currentLine = mutableListOf()
                 currentLine.addAll(packet.placements)
@@ -109,7 +110,6 @@ class LayoutEngine(
             // ---- Myanmar word grouping ----
             if (tok.isMyanmarCluster) {
                 val wordClusters = mutableListOf<TokenWithType>()
-                // Collect clusters until the last cluster of this word
                 while (i < tokens.size && tokens[i].isMyanmarCluster) {
                     val cluster = tokens[i]
                     wordClusters.add(cluster)
@@ -117,16 +117,15 @@ class LayoutEngine(
                     if (cluster.isLastInMyanmarWord) break   // word boundary
                 }
 
-                // Generate placements for the whole word
                 val placements = mutableListOf<WordPlacement>()
                 var totalWidth = 0f
 
-                // Coherent baseline for this word
-                var wordBaseDy = 0f
+                // FIXED: Removed the '- wordClusters.size' modifier. 
+                // The raw wordIndex at this moment is already unique and forward-stepping.
                 val firstRand = Random(
-                    (wordClusters.first().text.hashCode() * 31 + wordIndex - wordClusters.size).toLong()
+                    (wordClusters.first().text.hashCode() * 31 + wordIndex).toLong()
                 )
-                wordBaseDy = PenState.gaussian(0f, 2.0f, firstRand)
+                val wordBaseDy = PenState.gaussian(0f, 2.0f, firstRand)
 
                 for (ci in wordClusters.indices) {
                     val cluster = wordClusters[ci]
@@ -134,7 +133,6 @@ class LayoutEngine(
                     wordIndex++
                     val rand = Random(seed.toLong())
 
-                    // Update pen state before computing transforms (except rest)
                     pen.update(rest = false, isMyanmar = true, random = globalRandom)
 
                     val pressure = (pen.pressure + PenState.gaussian(0f, 0.05f, rand)).coerceIn(0.4f, 0.95f)
@@ -142,20 +140,16 @@ class LayoutEngine(
                     val scaleY = (1.00f + PenState.gaussian(0f, 0.03f, rand)).coerceIn(0.95f, 1.08f)
                     val slantOffset = pen.slantOffset + PenState.gaussian(0f, 3.0f, rand)
                     val rotation = PenState.gaussian(0f, 2.0f + pen.fatigue * 1.5f, rand)
-                    // Horizontal jitter enhanced by error accumulation and continuous x drift
                     val dx = PenState.gaussian(0f, 2.0f + pen.errorAccumulation, rand) + pen.xDrift * 0.35f
-                    // Coherent baseline: all clusters share wordBaseDy + tiny micro‑jitter
                     val dy = wordBaseDy + PenState.gaussian(0f, 0.3f, rand)
 
                     val tremor = pen.tremor * (1f + pen.fatigue * 0.5f)
                     val transforms = WordTransforms(pressure, scaleX, scaleY, slantOffset, rotation, dx, dy, tremor)
 
                     val nativeWidth = paint.measureText(cluster.text)
-                    // Incorporate spacing bias from pen state
                     val spacingBias = pen.spacingBias * 1.2f
                     var width = nativeWidth * scaleX + spacingBias
 
-                    // Tracking squeeze for non‑final clusters
                     if (ci < wordClusters.size - 1) {
                         width *= 0.80f
                     }
@@ -172,7 +166,6 @@ class LayoutEngine(
                 wordIndex++
                 val rand = Random(seed.toLong())
 
-                // Update pen state for this token (not a rest)
                 pen.update(rest = false, isMyanmar = false, random = globalRandom)
 
                 val pressure = (pen.pressure + PenState.gaussian(0f, 0.05f, rand)).coerceIn(0.4f, 0.95f)

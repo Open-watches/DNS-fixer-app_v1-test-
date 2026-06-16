@@ -12,13 +12,16 @@ data class TokenWithType(
 
 object Tokenizer {
 
+    private val myanmarClusterPattern = Pattern.compile(
+        "\\p{IsMyanmar}(?:\\p{M}|\\u1039\\p{IsMyanmar})*|\\s+|\\n"
+    )
+
     /**
-     * Tokenizes the input text. For Myanmar text, the token is kept as a whole word
-     * to preserve OpenType shaping. No sub‑cluster splitting occurs.
+     * Tokenizes incoming text streams cleanly.
+     * Breaks Latin text into word/whitespace tokens, and breaks Myanmar text 
+     * down into individual orthographic clusters while preserving word boundary flags.
      */
     fun tokenize(text: String): List<TokenWithType> {
-        // Use BreakIterator for the primary segmentation (spaces, punctuation).
-        // It may fail to split continuous Myanmar text – that’s fine; we keep the whole run.
         val wordIterator = try {
             BreakIterator.getWordInstance(Locale.getDefault()).apply { setText(text) }
         } catch (e: Exception) {
@@ -37,9 +40,15 @@ object Tokenizer {
                         result.add(TokenWithType(rawToken, false, true))
                     }
                     containsMyanmar(rawToken) -> {
-                        result.add(TokenWithType(rawToken, true, true))
+                        // Split the Myanmar word run into individual syllables/clusters
+                        val clusters = splitMyanmarClusters(rawToken)
+                        for (i in clusters.indices) {
+                            val isLast = (i == clusters.size - 1)
+                            result.add(TokenWithType(clusters[i], true, isLast))
+                        }
                     }
                     else -> {
+                        // Standard Latin words or spaces
                         result.add(TokenWithType(rawToken, false, true))
                     }
                 }
@@ -56,23 +65,18 @@ object Tokenizer {
     }
 
     /**
-     * Splits Myanmar text into orthographic clusters (syllables) using the
-     * Unicode 29 segmentation rules. This regex correctly groups base consonants,
-     * medial consonants, vowel signs, and tone marks.
-     * Now public for use by GlyphRenderer.
+     * Splits Myanmar text into true orthographic clusters (syllables).
+     * Now optimized to reuse a pre-compiled pattern instance.
      */
     fun splitMyanmarClusters(text: String): List<String> {
-        val pattern = Pattern.compile(
-            "\\p{IsMyanmar}" +
-            "(?:" +
-            "\\p{M}" +
-            "|\\u1039\\p{IsMyanmar}" +
-            ")*" +
-            "|\\s+|\\n"
-        )
-        val matcher = pattern.matcher(text)
+        val matcher = myanmarClusterPattern.matcher(text)
         val result = mutableListOf<String>()
-        while (matcher.find()) result.add(matcher.group())
+        while (matcher.find()) {
+            val cluster = matcher.group()
+            if (cluster.isNotEmpty()) {
+                result.add(cluster)
+            }
+        }
         return result
     }
 }
