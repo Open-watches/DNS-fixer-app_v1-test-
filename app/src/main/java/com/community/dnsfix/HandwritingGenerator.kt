@@ -5,7 +5,6 @@ import android.graphics.*
 import java.io.File
 import java.io.FileOutputStream
 import java.util.Random
-import java.util.regex.Pattern
 import kotlin.math.sin
 
 class HandwritingGenerator(
@@ -17,7 +16,7 @@ class HandwritingGenerator(
     private val customTypeface: Typeface? = null
 ) {
     private val fontSize = (lineSpacing * 0.58f).coerceIn(40f, 48f)
-    private val marginLeft = 140f // Expanded to give natural margin breathing room
+    private val marginLeft = 140f 
     private val marginRight = 80f
     private val globalSlant = 7f
     private val globalRandom = Random()
@@ -52,20 +51,6 @@ class HandwritingGenerator(
         val y: Float,
         val forceToMarginGutter: Boolean = false
     )
-
-    /**
-     * High-fidelity tokenization engine that protects Numbers and Myanmar text blocks
-     * from fracturing into individual letters, completely avoiding character pixel overlaps.
-     */
-    private fun robustTokenize(text: String): List<String> {
-        val tokens = mutableListOf<String>()
-        // Pattern matches: Western numbers, Myanmar numbers, Myanmar character blocks, English words, spaces, or individual signs
-        val matcher = Pattern.compile("[0-9]+|[၀-၉]+|[\\u1000-\\u109F]+|[a-zA-Z]+|\\s+|\\S").matcher(text)
-        while (matcher.find()) {
-            tokens.add(matcher.group())
-        }
-        return tokens
-    }
 
     private fun logError(msg: String, e: Exception?) {
         lastErrorMessage = msg + (e?.let { ": ${it.message}" } ?: "")
@@ -126,7 +111,7 @@ class HandwritingGenerator(
         }
     }
 
-    // ---------- Mode 2: NEW Absolute Position API (Write Anywhere Control) ----------
+    // ---------- Mode 2: Absolute Position API (Write Anywhere Control) ----------
     
     fun generateBitmapAtCoordinates(
         chunks: List<AbsoluteTextChunk>,
@@ -203,15 +188,15 @@ class HandwritingGenerator(
         marginBottom: Float,
         autoMarginNumbers: Boolean
     ) {
-        val rawTokens = robustTokenize(text)
+        // FIXED: Using project native Tokenizer utility to return expected List<TokenWithType>
+        val nativeTokens = Tokenizer.tokenize(text)
         val wrapWidth = pageWidth.toFloat() - marginLeft - marginRight
-        val placements = layoutEngine.computePlacements(rawTokens, pen, wrapWidth, globalRandom)
+        val placements = layoutEngine.computePlacements(nativeTokens, pen, wrapWidth, globalRandom)
         if (placements.isEmpty()) return
 
         var y = marginTop + lineSpacing * 1.5f
         val maxDrawY = height - marginBottom
 
-        // Custom strike-out ink parameters
         val mistakePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = baseInkColor
             style = Paint.Style.STROKE
@@ -247,23 +232,16 @@ class HandwritingGenerator(
                     continue 
                 }
 
-                // NATURAL HUMAN ERROR ENGINE
-                // Simulates cognitive writing slips by drawing a word, striking it out, and then advancing to rewrite it correctly
+                // NATURAL HUMAN ERROR SIMULATION
                 if (!isDigit && wp.text.trim().length > 2 && globalRandom.nextFloat() < mistakeProbability) {
                     val wordW = wp.estimatedWidth
                     val crossY = y - (fontSize * 0.25f) + baselineDrift
                     
-                    // 1. Draw the mistaken text block trace down
                     glyphRenderer.drawWord(canvas, wp, x, y, baselineDrift, globalSlant, customTypeface)
-                    
-                    // 2. Draw organic human cross-out line directly through it
                     canvas.drawLine(x - 4f, crossY, x + wordW + 4f, crossY, mistakePaint)
-                    
-                    // 3. Shift spacing coordinates forward to immediately rewrite the correct word next to it
                     x += wordW + 24f 
                 }
 
-                // Normal paper execution paths
                 glyphRenderer.drawWord(canvas, wp, x, y, baselineDrift, globalSlant, customTypeface)
                 x += wp.estimatedWidth
                 
@@ -282,10 +260,11 @@ class HandwritingGenerator(
 
     /**
      * Renders a custom floating text selection fragment anywhere on the canvas,
-     * maintaining token cluster bindings to protect Myanmar characters and numbers.
+     * maintaining token cluster structures to safeguard character placement.
      */
     private fun renderSingleCoordinateChunk(canvas: Canvas, chunk: AbsoluteTextChunk) {
-        val tokens = robustTokenize(chunk.text)
+        // FIXED: Using native Tokenizer here as well to fix compilation mismatch parameters
+        val tokens = Tokenizer.tokenize(chunk.text)
         val placements = layoutEngine.computePlacements(tokens, pen, width.toFloat(), globalRandom)
         
         var currentY = chunk.y
@@ -300,7 +279,6 @@ class HandwritingGenerator(
             for ((index, wp) in line.withIndex()) {
                 val isMyanmar = wp.text.any { it in '\u1000'..'\u109F' }
                 
-                // Draw precisely at the specific point selected on screen
                 glyphRenderer.drawWord(canvas, wp, currentX, currentY, 0f, globalSlant, customTypeface)
                 currentX += wp.estimatedWidth
                 
