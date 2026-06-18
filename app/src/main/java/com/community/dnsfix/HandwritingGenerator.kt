@@ -1,5 +1,6 @@
 package com.community.dnsfix.handwriting
 
+import com.community.dnsfix.handwriting.PaperRenderer
 import android.content.Context
 import android.graphics.*
 import java.io.File
