@@ -1,205 +1,366 @@
-package com.community.dnsfix.handwriting
+package com.community.dnsfix.ui
 
-import android.graphics.Paint
-import java.util.Random
+import android.graphics.Bitmap
+import androidx.compose.animation.core.*
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChanged
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.dp
+import com.community.dnsfix.handwriting.HandwritingGenerator
+import com.community.dnsfix.handwriting.NumberModifier
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlin.math.roundToInt
 
-data class WordTransforms(
-    val pressure: Float,
-    val scaleX: Float,
-    val scaleY: Float,
-    val slantOffset: Float,
-    val rotation: Float,
-    val dx: Float,
-    val dy: Float,
-    val tremor: Float
-)
+enum class EditorMode { Write, Move }
 
-data class WordPlacement(
-    val text: String,
-    val seed: Int,
-    val estimatedWidth: Float,
-    val transforms: WordTransforms,
-    val isPartOfMyanmarWord: Boolean = false
-)
+@Composable
+fun HandwritingCanvasScreen(
+    generator: HandwritingGenerator,
+    pageNumber: String = "1",
+    dateText: String = "16/06/2026",
+    numberModifier: NumberModifier = NumberModifier(false, true),
+    onBitmapReady: (Bitmap) -> Unit = {},
+    modifier: Modifier = Modifier
+) {
+    val density = LocalDensity.current
+    val scope = rememberCoroutineScope()
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val focusRequester = remember { FocusRequester() }
 
-class LayoutEngine(private val paint: Paint) {
+    // Paper dimensions from generator (pixels)
+    val paperWidthPx = generator.paperWidthPx
+    val paperHeightPx = generator.paperHeightPx
+    val paperWidthDp = with(density) { paperWidthPx.toDp() }
+    val paperHeightDp = with(density) { paperHeightPx.toDp() }
 
-    /**
-     * Groups a list of [WordPlacement] items into lines, respecting
-     * Myanmar‑word integrity and the given [wrapWidth].
-     *
-     * @param tokens The parsed tokens from [Tokenizer].
-     * @param pen The current pen state, mutated as tokens are processed.
-     * @param wrapWidth Available width for one line (in pixels).
-     * @param globalRandom Shared randomness source.
-     * @return A list of lines, each containing placed words.
-     */
-    fun computePlacements(
-        tokens: List<TokenWithType>,
-        pen: PenState,
-        wrapWidth: Float,
-        globalRandom: Random
-    ): List<List<WordPlacement>> {
+    // ---- Document state ----
+    var chunkList by remember { mutableStateOf(listOf<HandwritingGenerator.AbsoluteTextChunk>()) }
+    var currentBitmap by remember { mutableStateOf<Bitmap?>(null) }
+    var isGenerating by remember { mutableStateOf(false) }
 
-        // 1. Build packets – each packet is a whole Myanmar word or a single non‑Myanmar token
-        val packets = buildPackets(tokens, pen, globalRandom)
+    // ---- Editing state ----
+    var editorMode by remember { mutableStateOf(EditorMode.Write) }
+    var cursorPos by remember { mutableStateOf<Offset?>(null) }
+    var liveText by remember { mutableStateOf("") }
+    var selectedChunkIndex by remember { mutableStateOf<Int?>(null) }
 
-        // 2. Greedy line fitting
-        val lines = mutableListOf<MutableList<WordPlacement>>()
-        var currentLine = mutableListOf<WordPlacement>()
-        var currentWidth = 0f
+    // ---- Undo / Redo stacks ----
+    val undoStack = remember { mutableStateListOf<List<HandwritingGenerator.AbsoluteTextChunk>>() }
+    val redoStack = remember { mutableStateListOf<List<HandwritingGenerator.AbsoluteTextChunk>>() }
 
-        for (packet in packets) {
-            // Newline packet → start a new line
-            if (packet.placements.size == 1 && packet.placements[0].text == "\n") {
-                lines.add(currentLine)               // push current line (may be empty)
-                lines.add(mutableListOf())           // empty line for newline
-                currentLine = mutableListOf()
-                currentWidth = 0f
-                continue
-            }
+    // ---- Zoom & Pan ----
+    var scale by remember { mutableFloatStateOf(1f) }
+    var offset by remember { mutableStateOf(Offset.Zero) }
 
-            // If packet fits in remaining space, or if the line is completely empty
-            // (allows oversized single words to occupy a line alone)
-            if (currentWidth + packet.totalWidth <= wrapWidth || currentLine.isEmpty()) {
-                currentLine.addAll(packet.placements)
-                currentWidth += packet.totalWidth
-            } else {
-                // Packet doesn't fit → start a new line
-                lines.add(currentLine)
-                currentLine = mutableListOf()
-                currentLine.addAll(packet.placements)
-                currentWidth = packet.totalWidth
-            }
-        }
-
-        if (currentLine.isNotEmpty()) lines.add(currentLine)
-        return lines
-    }
-
-    // ---------------------------------------------------------------
-    //  Packet construction
-    // ---------------------------------------------------------------
-
-    private fun buildPackets(
-        tokens: List<TokenWithType>,
-        pen: PenState,
-        globalRandom: Random
-    ): List<WordPacket> {
-        val packets = mutableListOf<WordPacket>()
-        var i = 0
-        var wordIndex = 0   // increments for every token, guarantees unique seeds
-
-        while (i < tokens.size) {
-            val tok = tokens[i]
-
-            // Newline token → special packet
-            if (tok.text == "\n") {
-                pen.update(rest = true, isMyanmar = false, random = globalRandom)
-                val seed = (tok.text.hashCode() * 31 + wordIndex) and 0x7fffffff
-                wordIndex++
-                val transforms = dummyTransforms()
-                packets.add(
-                    WordPacket(
-                        listOf(WordPlacement(tok.text, seed, 0f, transforms, false)),
-                        0f
-                    )
-                )
-                i++
-                continue
-            }
-
-            // Myanmar word (one or more consecutive clusters)
-            if (tok.isMyanmarCluster) {
-                val wordClusters = mutableListOf<TokenWithType>()
-                while (i < tokens.size && tokens[i].isMyanmarCluster) {
-                    val cluster = tokens[i]
-                    wordClusters.add(cluster)
-                    i++
-                    if (cluster.isLastInMyanmarWord) break
-                }
-
-                val placements = mutableListOf<WordPlacement>()
-                var totalWidth = 0f
-
-                // Per‑word random offset (dy) stays consistent across all clusters of the word
-                val firstRand = Random(
-                    (wordClusters.first().text.hashCode() * 31 + wordIndex).toLong()
-                )
-                val wordBaseDy = PenState.gaussian(0f, 2.0f, firstRand)
-
-                for (ci in wordClusters.indices) {
-                    val cluster = wordClusters[ci]
-                    val seed = (cluster.text.hashCode() * 31 + wordIndex) and 0x7fffffff
-                    wordIndex++
-                    val rand = Random(seed.toLong())
-
-                    pen.update(rest = false, isMyanmar = true, random = globalRandom)
-
-                    val pressure = (pen.pressure + PenState.gaussian(0f, 0.05f, rand)).coerceIn(0.4f, 0.95f)
-                    val scaleX = (0.94f + PenState.gaussian(0f, 0.04f, rand)).coerceIn(0.85f, 1.05f)
-                    val scaleY = (1.00f + PenState.gaussian(0f, 0.03f, rand)).coerceIn(0.95f, 1.08f)
-                    val slantOffset = pen.slantOffset + PenState.gaussian(0f, 3.0f, rand)
-                    val rotation = PenState.gaussian(0f, 2.0f + pen.fatigue * 1.5f, rand)
-                    val dx = PenState.gaussian(0f, 2.0f + pen.errorAccumulation, rand) + pen.xDrift * 0.35f
-                    val dy = wordBaseDy + PenState.gaussian(0f, 0.3f, rand)
-
-                    val tremor = pen.tremor * (1f + pen.fatigue * 0.5f)
-                    val transforms = WordTransforms(pressure, scaleX, scaleY, slantOffset, rotation, dx, dy, tremor)
-
-                    val nativeWidth = paint.measureText(cluster.text)
-                    val spacingBias = pen.spacingBias * 1.2f
-                    var width = nativeWidth * scaleX + spacingBias
-
-                    // Slightly compress inter‑cluster spacing (Myanmar words are compact)
-                    if (ci < wordClusters.size - 1) {
-                        width *= 0.80f
-                    }
-
-                    val isPart = ci < wordClusters.size - 1
-                    placements.add(WordPlacement(cluster.text, seed, width, transforms, isPart))
-                    totalWidth += width
-                }
-
-                packets.add(WordPacket(placements, totalWidth))
-            } else {
-                // Non‑Myanmar token (single)
-                val seed = (tok.text.hashCode() * 31 + wordIndex) and 0x7fffffff
-                wordIndex++
-                val rand = Random(seed.toLong())
-
-                pen.update(rest = false, isMyanmar = false, random = globalRandom)
-
-                val pressure = (pen.pressure + PenState.gaussian(0f, 0.05f, rand)).coerceIn(0.4f, 0.95f)
-                val scaleX = (0.94f + PenState.gaussian(0f, 0.04f, rand)).coerceIn(0.85f, 1.05f)
-                val scaleY = (1.00f + PenState.gaussian(0f, 0.03f, rand)).coerceIn(0.95f, 1.08f)
-                val slantOffset = pen.slantOffset + PenState.gaussian(0f, 3.0f, rand)
-                val rotation = PenState.gaussian(0f, 2.0f + pen.fatigue * 1.5f, rand)
-                val dx = PenState.gaussian(0f, 2.0f + pen.errorAccumulation, rand) + pen.xDrift * 0.35f
-                val dy = PenState.gaussian(0f, 2.0f, rand)
-                val tremor = pen.tremor * (1f + pen.fatigue * 0.5f)
-
-                val transforms = WordTransforms(pressure, scaleX, scaleY, slantOffset, rotation, dx, dy, tremor)
-                val nativeWidth = paint.measureText(tok.text)
-                val spacingBias = pen.spacingBias * 1.2f
-                val width = nativeWidth * scaleX + spacingBias
-
-                val placement = WordPlacement(tok.text, seed, width, transforms, false)
-                packets.add(WordPacket(listOf(placement), width))
-                i++
-            }
-        }
-        return packets
-    }
-
-    // ---------------------------------------------------------------
-    //  Internal helpers
-    // ---------------------------------------------------------------
-
-    private data class WordPacket(
-        val placements: List<WordPlacement>,
-        val totalWidth: Float
+    // ---- Cursor blink animation ----
+    val infiniteTransition = rememberInfiniteTransition()
+    val blinkAlpha by infiniteTransition.animateFloat(
+        initialValue = 0.2f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(500, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse
+        )
     )
 
-    private fun dummyTransforms() = WordTransforms(0.7f, 1f, 1f, 0f, 0f, 0f, 0f, 1f)
+    // ---- Snap to ruled lines (match paper settings) ----
+    val lineSpacing = 72f      // must equal HandwritingGenerator.lineSpacing
+    val marginTop = 180f       // must equal paper top margin
+
+    fun snapY(y: Float): Float {
+        val lineIdx = ((y - marginTop) / lineSpacing).roundToInt().coerceAtLeast(0)
+        return marginTop + lineIdx * lineSpacing
+    }
+
+    // ---- Bitmap regeneration (background thread) ----
+    fun regenerateBitmap() {
+        if (isGenerating) return
+        isGenerating = true
+        scope.launch {
+            // Include live preview if writing
+            val allChunks = if (cursorPos != null && liveText.isNotEmpty()) {
+                chunkList + HandwritingGenerator.AbsoluteTextChunk(liveText.trim(), cursorPos!!.x, cursorPos!!.y)
+            } else chunkList
+
+            val bmp = withContext(Dispatchers.Default) {
+                generator.generateBitmapAtCoordinates(allChunks, pageNumber, dateText)
+            }
+            currentBitmap = bmp
+            onBitmapReady(bmp)    // notify parent (e.g., MainActivity)
+            isGenerating = false
+        }
+    }
+
+    // Trigger initial render and on any change
+    LaunchedEffect(Unit) { regenerateBitmap() }
+    LaunchedEffect(chunkList, liveText, cursorPos, pageNumber, dateText) {
+        regenerateBitmap()
+    }
+
+    // ---- Undo / Redo helpers ----
+    fun pushUndo() {
+        undoStack.add(chunkList)
+        redoStack.clear()
+    }
+
+    fun addChunk(chunk: HandwritingGenerator.AbsoluteTextChunk) {
+        pushUndo()
+        chunkList = chunkList + chunk
+    }
+
+    fun moveChunk(index: Int, dx: Float, dy: Float) {
+        if (dx == 0f && dy == 0f) return
+        pushUndo()
+        val old = chunkList[index]
+        chunkList = chunkList.toMutableList().apply {
+            this[index] = old.copy(x = old.x + dx, y = old.y + dy)
+        }
+    }
+
+    fun deleteChunk(index: Int) {
+        pushUndo()
+        chunkList = chunkList.toMutableList().apply { removeAt(index) }
+        selectedChunkIndex = null
+    }
+
+    fun undo() {
+        if (undoStack.isNotEmpty()) {
+            redoStack.add(chunkList)
+            chunkList = undoStack.removeLast()
+            selectedChunkIndex = null
+        }
+    }
+
+    fun redo() {
+        if (redoStack.isNotEmpty()) {
+            undoStack.add(chunkList)
+            chunkList = redoStack.removeLast()
+            selectedChunkIndex = null
+        }
+    }
+
+    fun commitLiveText() {
+        val text = liveText.trim()
+        if (cursorPos != null && text.isNotEmpty()) {
+            addChunk(HandwritingGenerator.AbsoluteTextChunk(text, cursorPos!!.x, cursorPos!!.y))
+        }
+        cursorPos = null
+        liveText = ""
+        focusRequester.freeFocus()
+        keyboardController?.hide()
+    }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Handwriting Editor") },
+                actions = {
+                    Button(
+                        onClick = {
+                            if (chunkList.isNotEmpty()) {
+                                pushUndo()
+                                chunkList = emptyList()
+                                selectedChunkIndex = null
+                            }
+                        },
+                        enabled = !isGenerating,
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                    ) { Text("Clear") }
+                }
+            )
+        },
+        bottomBar = {
+            BottomAppBar {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceEvenly,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    // Write / Move toggle
+                    IconButton(onClick = {
+                        editorMode = if (editorMode == EditorMode.Write) EditorMode.Move else EditorMode.Write
+                        selectedChunkIndex = null
+                        if (cursorPos != null && liveText.isNotEmpty()) commitLiveText()
+                    }) {
+                        Icon(
+                            imageVector = if (editorMode == EditorMode.Write) Icons.Default.Edit else Icons.Default.PanTool,
+                            contentDescription = "Mode",
+                            tint = if (editorMode == EditorMode.Write) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.secondary
+                        )
+                    }
+                    // Undo
+                    IconButton(onClick = { undo() }, enabled = undoStack.isNotEmpty()) {
+                        Icon(Icons.Default.Undo, contentDescription = "Undo")
+                    }
+                    // Redo
+                    IconButton(onClick = { redo() }, enabled = redoStack.isNotEmpty()) {
+                        Icon(Icons.Default.Redo, contentDescription = "Redo")
+                    }
+                    // Delete selected
+                    IconButton(
+                        onClick = { selectedChunkIndex?.let { deleteChunk(it) } },
+                        enabled = selectedChunkIndex != null && editorMode == EditorMode.Move
+                    ) {
+                        Icon(Icons.Default.Delete, contentDescription = "Delete")
+                    }
+                    // Done button
+                    TextButton(
+                        onClick = { commitLiveText() },
+                        enabled = cursorPos != null && liveText.isNotBlank()
+                    ) { Text("Done") }
+                }
+            }
+        }
+    ) { innerPadding ->
+        Box(
+            modifier = modifier
+                .padding(innerPadding)
+                .fillMaxSize()
+                .background(Color(0xFFF9F6F0))
+        ) {
+            // Hidden text field for keyboard input (Write mode)
+            BasicTextField(
+                value = liveText,
+                onValueChange = { newText ->
+                    liveText = numberModifier.modifyString(newText)
+                },
+                modifier = Modifier
+                    .alpha(0f)
+                    .focusRequester(focusRequester)
+                    .onFocusChanged { focusState ->
+                        if (!focusState.isFocused && cursorPos != null && liveText.isNotBlank()) {
+                            commitLiveText()
+                        }
+                    },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text, imeAction = ImeAction.Done),
+                keyboardActions = KeyboardActions(onDone = { commitLiveText() })
+            )
+
+            // Main interactive paper area (zoomable / pannable)
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .pointerInput(Unit) {
+                        detectTransformGestures { _, pan, zoom, _ ->
+                            scale *= zoom
+                            offset = offset + pan
+                        }
+                    }
+                    .pointerInput(editorMode, chunkList, scale, offset) {
+                        awaitPointerEventScope {
+                            while (true) {
+                                val event = awaitPointerEvent()
+                                val firstPointer = event.changes.firstOrNull() ?: continue
+
+                                when {
+                                    // Tap (press released)
+                                    !firstPointer.pressed && firstPointer.previousPressed -> {
+                                        val rawPos = firstPointer.position
+                                        val paperPos = (rawPos - offset) / scale
+
+                                        if (editorMode == EditorMode.Write) {
+                                            val snappedY = snapY(paperPos.y)
+                                            cursorPos = Offset(paperPos.x, snappedY)
+                                            liveText = ""
+                                            focusRequester.requestFocus()
+                                            keyboardController?.show()
+                                        } else { // Move mode
+                                            selectedChunkIndex = chunkList.indexOfLast { chunk ->
+                                                val w = generator.estimateTextWidth(chunk.text)
+                                                val rect = Rect(
+                                                    chunk.x - 5f, chunk.y - 30f,
+                                                    chunk.x + w + 5f, chunk.y + 20f
+                                                )
+                                                rect.contains(paperPos)
+                                            }.takeIf { it >= 0 }
+                                        }
+                                    }
+
+                                    // Dragging (move mode + selection)
+                                    editorMode == EditorMode.Move && selectedChunkIndex != null &&
+                                    firstPointer.pressed && firstPointer.positionChanged() -> {
+                                        val delta = firstPointer.position - firstPointer.previousPosition
+                                        val paperDelta = Offset(delta.x / scale, delta.y / scale)
+                                        moveChunk(selectedChunkIndex!!, paperDelta.x, paperDelta.y)
+                                    }
+                                }
+                            }
+                        }
+                    }
+            ) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .graphicsLayer {
+                            scaleX = scale
+                            scaleY = scale
+                            translationX = offset.x
+                            translationY = offset.y
+                        }
+                        .size(paperWidthDp, paperHeightDp)
+                ) {
+                    if (currentBitmap != null) {
+                        Canvas(modifier = Modifier.fillMaxSize()) {
+                            drawImage(currentBitmap!!.asImageBitmap())
+
+                            // Crosshair cursor (Write mode)
+                            if (cursorPos != null && editorMode == EditorMode.Write) {
+                                val alpha = blinkAlpha
+                                val cx = cursorPos!!.x
+                                val cy = cursorPos!!.y
+                                drawLine(Color.Black.copy(alpha), Offset(cx - 12f, cy), Offset(cx + 12f, cy), 1.5f)
+                                drawLine(Color.Black.copy(alpha), Offset(cx, cy - 12f), Offset(cx, cy + 12f), 1.5f)
+                            }
+
+                            // Selection highlight (Move mode)
+                            if (selectedChunkIndex != null && editorMode == EditorMode.Move) {
+                                val chunk = chunkList[selectedChunkIndex!!]
+                                val w = generator.estimateTextWidth(chunk.text)
+                                val rectTopLeft = Offset(chunk.x - 4f, chunk.y - 28f)
+                                val rectSize = Size(w + 8f, 46f)
+
+                                // Background
+                                drawRect(Color.Blue.copy(alpha = 0.2f), rectTopLeft, rectSize)
+                                // Border
+                                drawRect(Color.Blue.copy(alpha = 0.8f), rectTopLeft, rectSize, style = Stroke(2f))
+                                // Resize handles
+                                drawRect(Color.Blue, rectTopLeft, Size(8f, 8f))
+                                drawRect(Color.Blue, Offset(chunk.x + w - 4f, chunk.y + 18f), Size(8f, 8f))
+                            }
+                        }
+                    } else {
+                        CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
+                    }
+                }
+            }
+        }
+    }
 }
