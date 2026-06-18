@@ -115,7 +115,7 @@ class PaperRenderer(
             canvas.drawLine(marginLeft, 0f, marginLeft, height, marginPaint)
         }
 
-        private const val PAPER_SHADER_SOURCE = """
+        private val PAPER_SHADER_SOURCE = """
             uniform float2 resolution;
             half4 main(float2 fragCoord) {
                 float2 uv = fragCoord / resolution;
