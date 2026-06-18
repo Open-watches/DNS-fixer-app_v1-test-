@@ -1,7 +1,7 @@
 package com.community.dnsfix.handwriting
 
 import java.text.BreakIterator
-import java.util.*
+import java.util.Locale
 import java.util.regex.Pattern
 
 data class TokenWithType(
@@ -10,23 +10,30 @@ data class TokenWithType(
     val isLastInMyanmarWord: Boolean
 )
 
+/**
+ * Tokenizes mixed Latin / Myanmar text into a flat list of [TokenWithType] items.
+ *
+ * **Latin script** – each word and each whitespace sequence becomes one token.
+ * **Myanmar script** – each orthographic syllable (cluster) becomes a token;
+ * the last cluster in a Myanmar word is flagged with [TokenWithType.isLastInMyanmarWord] = true.
+ * Newline characters are kept as individual tokens.
+ */
 object Tokenizer {
 
+    // Pre‑compiled pattern for splitting a Myanmar text run into orthographic clusters.
+    // Matches a base character followed by any combining marks or virama sequences.
     private val myanmarClusterPattern = Pattern.compile(
-        "\\p{IsMyanmar}(?:\\p{M}|\\u1039\\p{IsMyanmar})*|\\s+|\\n"
+        "\\p{IsMyanmar}(?:\\p{M}|\\u1039\\p{IsMyanmar})*"
     )
 
     /**
-     * Tokenizes incoming text streams cleanly.
-     * Breaks Latin text into word/whitespace tokens, and breaks Myanmar text 
-     * down into individual orthographic clusters while preserving word boundary flags.
+     * Main entry point: tokenizes [text] for the handwriting layout engine.
      */
     fun tokenize(text: String): List<TokenWithType> {
-        val wordIterator = try {
-            BreakIterator.getWordInstance(Locale.getDefault()).apply { setText(text) }
-        } catch (e: Exception) {
-            BreakIterator.getCharacterInstance().apply { setText(text) }
-        }
+        // Use the platform’s word‑break iterator.  A character‑based fallback is very unlikely
+        // to be needed, so we keep it simple.
+        val wordIterator = BreakIterator.getWordInstance(Locale.getDefault())
+        wordIterator.setText(text)
 
         val result = mutableListOf<TokenWithType>()
         var start = wordIterator.first()
@@ -36,21 +43,27 @@ object Tokenizer {
             val rawToken = text.substring(start, end)
             if (rawToken.isNotEmpty()) {
                 when {
-                    rawToken == "\n" -> {
+                    rawToken == "\n" ->
                         result.add(TokenWithType(rawToken, false, true))
-                    }
-                    containsMyanmar(rawToken) -> {
-                        // Split the Myanmar word run into individual syllables/clusters
+
+                    rawToken.any { it in '\u1000'..'\u109F' } -> {
+                        // The word‑break iterator gave us a whole Myanmar “word”.
+                        // Split it into orthographic clusters while preserving the last‑cluster flag.
                         val clusters = splitMyanmarClusters(rawToken)
                         for (i in clusters.indices) {
-                            val isLast = (i == clusters.size - 1)
-                            result.add(TokenWithType(clusters[i], true, isLast))
+                            result.add(
+                                TokenWithType(
+                                    text = clusters[i],
+                                    isMyanmarCluster = true,
+                                    isLastInMyanmarWord = (i == clusters.size - 1)
+                                )
+                            )
                         }
                     }
-                    else -> {
-                        // Standard Latin words or spaces
+
+                    else ->
+                        // Latin words, punctuation, spaces, etc.
                         result.add(TokenWithType(rawToken, false, true))
-                    }
                 }
             }
             start = end
@@ -59,24 +72,17 @@ object Tokenizer {
         return result
     }
 
-    private fun containsMyanmar(s: String): Boolean {
-        for (ch in s) if (ch in '\u1000'..'\u109F') return true
-        return false
-    }
-
     /**
-     * Splits Myanmar text into true orthographic clusters (syllables).
-     * Now optimized to reuse a pre-compiled pattern instance.
+     * Splits a contiguous run of Myanmar text into individual orthographic clusters.
+     * The regex does not match whitespace – it is expected that the caller already
+     * separated Myanmar words from surrounding spaces.
      */
-    fun splitMyanmarClusters(text: String): List<String> {
+    private fun splitMyanmarClusters(text: String): List<String> {
         val matcher = myanmarClusterPattern.matcher(text)
-        val result = mutableListOf<String>()
+        val clusters = mutableListOf<String>()
         while (matcher.find()) {
-            val cluster = matcher.group()
-            if (cluster.isNotEmpty()) {
-                result.add(cluster)
-            }
+            clusters.add(matcher.group())
         }
-        return result
+        return clusters
     }
 }
