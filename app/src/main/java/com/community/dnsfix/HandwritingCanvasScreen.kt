@@ -15,7 +15,9 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.FocusState
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
@@ -239,7 +241,7 @@ fun HandwritingCanvasScreen(
                 modifier = Modifier
                     .alpha(0f)
                     .focusRequester(focusRequester)
-                    .onFocusChanged { focusState ->
+                    .onFocusChanged { focusState: FocusState ->
                         if (!focusState.isFocused && cursorPos != null && liveText.isNotBlank()) {
                             commitLiveText()
                         }
