@@ -10,45 +10,26 @@ data class TokenWithType(
     val isLastInMyanmarWord: Boolean
 )
 
-/**
- * Tokenizes mixed Latin / Myanmar text into a flat list of [TokenWithType] items.
- *
- * **Latin script** – each word and each whitespace sequence becomes one token.
- * **Myanmar script** – each orthographic syllable (cluster) becomes a token;
- * the last cluster in a Myanmar word is flagged with [TokenWithType.isLastInMyanmarWord] = true.
- * Newline characters are kept as individual tokens.
- */
 object Tokenizer {
 
-    // Pre‑compiled pattern for splitting a Myanmar text run into orthographic clusters.
-    // Matches a base character followed by any combining marks or virama sequences.
+    // Expanded Myanmar cluster regex (handles kinzi, medials, stacked)
     private val myanmarClusterPattern = Pattern.compile(
-        "\\p{IsMyanmar}(?:\\p{M}|\\u1039\\p{IsMyanmar})*"
+        "\\p{IsMyanmar}(?:\\p{Mn}|\\p{Mc}|\\u1039\\p{IsMyanmar}|\\u103A)*"
     )
 
-    /**
-     * Main entry point: tokenizes [text] for the handwriting layout engine.
-     */
     fun tokenize(text: String): List<TokenWithType> {
-        // Use the platform’s word‑break iterator.  A character‑based fallback is very unlikely
-        // to be needed, so we keep it simple.
         val wordIterator = BreakIterator.getWordInstance(Locale.getDefault())
         wordIterator.setText(text)
-
         val result = mutableListOf<TokenWithType>()
         var start = wordIterator.first()
         var end = wordIterator.next()
-
         while (end != BreakIterator.DONE) {
             val rawToken = text.substring(start, end)
             if (rawToken.isNotEmpty()) {
                 when {
                     rawToken == "\n" ->
                         result.add(TokenWithType(rawToken, false, true))
-
-                    rawToken.any { it in '\u1000'..'\u109F' } -> {
-                        // The word‑break iterator gave us a whole Myanmar “word”.
-                        // Split it into orthographic clusters while preserving the last‑cluster flag.
+                    containsMyanmar(rawToken) -> {
                         val clusters = splitMyanmarClusters(rawToken)
                         for (i in clusters.indices) {
                             result.add(
@@ -60,9 +41,7 @@ object Tokenizer {
                             )
                         }
                     }
-
                     else ->
-                        // Latin words, punctuation, spaces, etc.
                         result.add(TokenWithType(rawToken, false, true))
                 }
             }
@@ -72,17 +51,36 @@ object Tokenizer {
         return result
     }
 
-    /**
-     * Splits a contiguous run of Myanmar text into individual orthographic clusters.
-     * The regex does not match whitespace – it is expected that the caller already
-     * separated Myanmar words from surrounding spaces.
-     */
-    private fun splitMyanmarClusters(text: String): List<String> {
+    fun splitMyanmarClusters(text: String): List<String> {
         val matcher = myanmarClusterPattern.matcher(text)
         val clusters = mutableListOf<String>()
+        var lastEnd = 0
         while (matcher.find()) {
+            if (matcher.start() > lastEnd) {
+                // Keep unmatched characters as individual tokens
+                val unmatched = text.substring(lastEnd, matcher.start())
+                for (c in unmatched) {
+                    clusters.add(c.toString())
+                }
+            }
             clusters.add(matcher.group())
+            lastEnd = matcher.end()
         }
-        return clusters
+        if (lastEnd < text.length) {
+            val unmatched = text.substring(lastEnd)
+            for (c in unmatched) {
+                clusters.add(c.toString())
+            }
+        }
+        return clusters.ifEmpty { listOf(text) }
+    }
+
+    fun containsMyanmar(s: String): Boolean {
+        for (ch in s) {
+            if (ch in '\u1000'..'\u109F' ||
+                ch in '\uAA60'..'\uAA7F' ||
+                ch in '\uA9E0'..'\uA9FF') return true
+        }
+        return false
     }
 }

@@ -8,27 +8,21 @@ import java.util.Random
 import kotlin.math.sin
 
 class HandwritingGenerator(
-    /** Width of the paper canvas in pixels – also available as [paperWidthPx]. */
     val paperWidthPx: Int = 1000,
-    /** Height of the paper canvas in pixels – also available as [paperHeightPx]. */
     val paperHeightPx: Int = 1200,
     private val context: Context? = null,
     private val baseInkColor: Int = Color.rgb(0, 51, 153),
     private val lineSpacing: Float = 72f,
     private val customTypeface: Typeface? = null
 ) {
-    // ---------- Derived sizes ----------
-    private val fontSize = (lineSpacing * 0.58f).coerceIn(40f, 48f)
+    // Changed from private to internal for estimateTextWidth
+    internal val fontSize = (lineSpacing * 0.58f).coerceIn(40f, 48f)
     private val marginLeft = 140f
     private val marginRight = 80f
     private val globalSlant = 7f
     private val globalRandom = Random()
-
-    // ---------- Error simulation constants ----------
-    /** Probability of a natural‑looking strike‑through mistake. */
     private val mistakeProbability = 0.025f
 
-    // ---------- Sub‑components ----------
     private val layoutEngine = LayoutEngine(
         Paint(Paint.ANTI_ALIAS_FLAG).apply {
             textSize = fontSize
@@ -37,14 +31,9 @@ class HandwritingGenerator(
     )
     private val glyphRenderer = GlyphRenderer(baseInkColor, fontSize)
 
-    // ---------- Error logging ----------
     private var lastErrorMessage: String? = null
     private var lastErrorStackTrace: String? = null
 
-    /**
-     * Data structure holding explicit placement configuration parameters 
-     * to write text anywhere on the canvas via selection coordinates.
-     */
     data class AbsoluteTextChunk(
         val text: String,
         val x: Float,
@@ -52,22 +41,17 @@ class HandwritingGenerator(
         val forceToMarginGutter: Boolean = false
     )
 
-    /** Returns the last logged error pair (message, stack trace), or `null` if none. */
     fun getLastError(): Pair<String?, String?> = Pair(lastErrorMessage, lastErrorStackTrace)
 
-    // ---------------------------------------------------------------
-    //  Mode 1 – Standard sequential flow (fills the page from the top)
-    // ---------------------------------------------------------------
+    // New helper for UI hit-testing
+    fun estimateTextWidth(text: String): Float {
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            textSize = fontSize
+            typeface = customTypeface ?: Typeface.DEFAULT
+        }
+        return paint.measureText(text)
+    }
 
-    /**
-     * Generates a standard‑flow page.
-     *
-     * @param text             The whole text to lay out sequentially.
-     * @param pageNumber       Optional page number placed in the top‑right corner.
-     * @param dateText         Optional date placed next to the page number.
-     * @param autoMarginNumbers If `true`, short digit‑only tokens (≤3 digits) at the
-     *                          start of a line are pulled to the left margin.
-     */
     fun generateBitmap(
         text: String,
         pageNumber: String = "",
@@ -75,7 +59,6 @@ class HandwritingGenerator(
         autoMarginNumbers: Boolean = false
     ): Bitmap = generateBitmap(text, paperWidthPx, paperHeightPx, pageNumber, dateText, autoMarginNumbers)
 
-    /** Full‑parameter variant – allows overriding canvas size. */
     fun generateBitmap(
         text: String,
         canvasWidth: Int,
@@ -87,16 +70,12 @@ class HandwritingGenerator(
         return try {
             lastErrorMessage = null
             lastErrorStackTrace = null
-
             val bitmap = Bitmap.createBitmap(canvasWidth, canvasHeight, Bitmap.Config.ARGB_8888)
             val canvas = Canvas(bitmap)
-
             val marginTop = 180f
             val marginBottom = 160f
-
             drawPaperBackground(canvas, canvasWidth, canvasHeight, marginTop, marginBottom)
             drawHeaders(canvas, canvasWidth, marginTop, pageNumber, dateText)
-
             if (text.isNotEmpty()) {
                 layoutAndDrawSequential(canvas, text, canvasWidth, marginTop, marginBottom, autoMarginNumbers)
             }
@@ -107,17 +86,6 @@ class HandwritingGenerator(
         }
     }
 
-    // ---------------------------------------------------------------
-    //  Mode 2 – Absolute coordinate placement (write anywhere on the paper)
-    // ---------------------------------------------------------------
-
-    /**
-     * Generates a page containing only the text chunks placed at their absolute coordinates.
-     *
-     * @param chunks     List of [AbsoluteTextChunk] defining what to draw and where.
-     * @param pageNumber Optional page number in the top‑right.
-     * @param dateText   Optional date near the page number.
-     */
     fun generateBitmapAtCoordinates(
         chunks: List<AbsoluteTextChunk>,
         pageNumber: String = "",
@@ -126,20 +94,15 @@ class HandwritingGenerator(
         return try {
             lastErrorMessage = null
             lastErrorStackTrace = null
-
             val bitmap = Bitmap.createBitmap(paperWidthPx, paperHeightPx, Bitmap.Config.ARGB_8888)
             val canvas = Canvas(bitmap)
-
             val marginTop = 180f
             val marginBottom = 160f
-
             drawPaperBackground(canvas, paperWidthPx, paperHeightPx, marginTop, marginBottom)
             drawHeaders(canvas, paperWidthPx, marginTop, pageNumber, dateText)
-
             for (chunk in chunks) {
                 renderSingleCoordinateChunk(canvas, chunk)
             }
-
             bitmap
         } catch (e: Exception) {
             logError("Coordinate generation failed", e)
@@ -147,11 +110,6 @@ class HandwritingGenerator(
         }
     }
 
-    // ---------------------------------------------------------------
-    //  Private drawing helpers
-    // ---------------------------------------------------------------
-
-    /** Resets pen state for a fresh generation. */
     private fun resetPenState(): PenState {
         val pen = PenState()
         pen.pressure = 0.88f; pen.slantOffset = 0f; pen.tremor = 1.0f; pen.fatigue = 0f
@@ -161,7 +119,8 @@ class HandwritingGenerator(
 
     private fun drawPaperBackground(canvas: Canvas, w: Int, h: Int, marginTop: Float, marginBottom: Float) {
         PaperRenderer(w, h).draw(canvas)
-        PaperRenderer.drawLinesAndMargin(
+        // IMPORTANT: fully qualified call to companion object method
+        com.community.dnsfix.handwriting.PaperRenderer.drawLinesAndMargin(
             canvas = canvas,
             width = w.toFloat(),
             height = h.toFloat(),
@@ -187,10 +146,6 @@ class HandwritingGenerator(
         }
     }
 
-    // ---------------------------------------------------------------
-    //  Sequential flow layout + draw
-    // ---------------------------------------------------------------
-
     private fun layoutAndDrawSequential(
         canvas: Canvas,
         text: String,
@@ -211,7 +166,6 @@ class HandwritingGenerator(
         var y = marginTop + lineSpacing * 1.5f
         val maxDrawY = paperHeightPx - marginBottom
 
-        // Strike‑through paint for simulated mistakes
         val mistakePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = baseInkColor
             style = Paint.Style.STROKE
@@ -230,7 +184,6 @@ class HandwritingGenerator(
                 continue
             }
 
-            // Subtle sine‑based line variation
             val sineDrift = sin(lineIndex * 0.5f) * 2.0f
             baselineDrift = (baselineDrift + PenState.gaussian(0f, 0.6f, globalRandom) + sineDrift)
                 .coerceIn(-6f, 6f)
@@ -241,38 +194,30 @@ class HandwritingGenerator(
                 val isMyanmar = wp.text.any { it in '\u1000'..'\u109F' }
                 val isDigit = wp.text.any { it.isDigit() || it in '၀'..'၉' }
 
-                // --- Optional margin‑pulled numbers (e.g., page numbers) ---
                 if (autoMarginNumbers && index == 0 && isDigit && wp.text.length <= 3) {
-                    // Place the number at the left margin gutter
                     val marginX = marginLeft - wp.estimatedWidth - 30f
                     glyphRenderer.drawWord(canvas, wp, marginX, y, baselineDrift, globalSlant, customTypeface)
-                    // Reset x to margin‑left for the following words
                     x = marginLeft
                     pen.update(rest = false, isMyanmar = false, random = globalRandom)
                     continue
                 }
 
-                // --- Natural human‑error simulation (2.5% chance for longer words) ---
                 val makeMistake = !isDigit && wp.text.trim().length > 2 &&
                         globalRandom.nextFloat() < mistakeProbability
 
                 if (makeMistake) {
-                    // Draw the word once with a strike‑through line
                     val wordW = wp.estimatedWidth
                     val crossY = y - (fontSize * 0.25f) + baselineDrift
                     glyphRenderer.drawWord(canvas, wp, x, y, baselineDrift, globalSlant, customTypeface)
                     canvas.drawLine(x - 4f, crossY, x + wordW + 4f, crossY, mistakePaint)
-                    x += wordW + 24f   // extra space after the crossed‑out word
+                    x += wordW + 24f
                     pen.update(rest = false, isMyanmar = isMyanmar, random = globalRandom)
-                    // Skip the normal drawing below
                     continue
                 }
 
-                // --- Normal word drawing ---
                 glyphRenderer.drawWord(canvas, wp, x, y, baselineDrift, globalSlant, customTypeface)
                 x += wp.estimatedWidth
 
-                // Inter‑word spacing (skipped inside Myanmar clusters)
                 if (index < line.size - 1) {
                     val nextWp = line[index + 1]
                     if (!(wp.isPartOfMyanmarWord && nextWp.isPartOfMyanmarWord)) {
@@ -286,10 +231,6 @@ class HandwritingGenerator(
             lineIndex++
         }
     }
-
-    // ---------------------------------------------------------------
-    //  Absolute coordinate chunk rendering
-    // ---------------------------------------------------------------
 
     private fun renderSingleCoordinateChunk(canvas: Canvas, chunk: AbsoluteTextChunk) {
         val pen = resetPenState()
@@ -307,8 +248,6 @@ class HandwritingGenerator(
 
             for ((index, wp) in line.withIndex()) {
                 val isMyanmar = wp.text.any { it in '\u1000'..'\u109F' }
-
-                // Absolute chunks are drawn without baseline drift for precision
                 glyphRenderer.drawWord(canvas, wp, currentX, currentY, 0f, globalSlant, customTypeface)
                 currentX += wp.estimatedWidth
 
@@ -323,10 +262,6 @@ class HandwritingGenerator(
             currentY += lineSpacing
         }
     }
-
-    // ---------------------------------------------------------------
-    //  Error bitmap & logging
-    // ---------------------------------------------------------------
 
     private fun createErrorBitmap(w: Int, h: Int, e: Exception): Bitmap {
         val bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
@@ -350,7 +285,7 @@ class HandwritingGenerator(
                     fos.write("$msg\n".toByteArray())
                     fos.write(lastErrorStackTrace!!.toByteArray())
                 }
-            } catch (_: Exception) { /* best effort */ }
+            } catch (_: Exception) { }
         }
     }
 }

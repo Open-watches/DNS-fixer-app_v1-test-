@@ -4,6 +4,7 @@ import android.graphics.Bitmap
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
@@ -41,6 +42,7 @@ import kotlin.math.roundToInt
 
 enum class EditorMode { Write, Move }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HandwritingCanvasScreen(
     generator: HandwritingGenerator,
@@ -55,32 +57,26 @@ fun HandwritingCanvasScreen(
     val keyboardController = LocalSoftwareKeyboardController.current
     val focusRequester = remember { FocusRequester() }
 
-    // Paper dimensions from generator (pixels)
     val paperWidthPx = generator.paperWidthPx
     val paperHeightPx = generator.paperHeightPx
     val paperWidthDp = with(density) { paperWidthPx.toDp() }
     val paperHeightDp = with(density) { paperHeightPx.toDp() }
 
-    // ---- Document state ----
     var chunkList by remember { mutableStateOf(listOf<HandwritingGenerator.AbsoluteTextChunk>()) }
     var currentBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var isGenerating by remember { mutableStateOf(false) }
 
-    // ---- Editing state ----
     var editorMode by remember { mutableStateOf(EditorMode.Write) }
     var cursorPos by remember { mutableStateOf<Offset?>(null) }
     var liveText by remember { mutableStateOf("") }
     var selectedChunkIndex by remember { mutableStateOf<Int?>(null) }
 
-    // ---- Undo / Redo stacks ----
     val undoStack = remember { mutableStateListOf<List<HandwritingGenerator.AbsoluteTextChunk>>() }
     val redoStack = remember { mutableStateListOf<List<HandwritingGenerator.AbsoluteTextChunk>>() }
 
-    // ---- Zoom & Pan ----
     var scale by remember { mutableFloatStateOf(1f) }
     var offset by remember { mutableStateOf(Offset.Zero) }
 
-    // ---- Cursor blink animation ----
     val infiniteTransition = rememberInfiniteTransition()
     val blinkAlpha by infiniteTransition.animateFloat(
         initialValue = 0.2f,
@@ -91,21 +87,18 @@ fun HandwritingCanvasScreen(
         )
     )
 
-    // ---- Snap to ruled lines (match paper settings) ----
-    val lineSpacing = 72f      // must equal HandwritingGenerator.lineSpacing
-    val marginTop = 180f       // must equal paper top margin
+    val lineSpacing = 72f
+    val marginTop = 180f
 
     fun snapY(y: Float): Float {
         val lineIdx = ((y - marginTop) / lineSpacing).roundToInt().coerceAtLeast(0)
         return marginTop + lineIdx * lineSpacing
     }
 
-    // ---- Bitmap regeneration (background thread) ----
     fun regenerateBitmap() {
         if (isGenerating) return
         isGenerating = true
         scope.launch {
-            // Include live preview if writing
             val allChunks = if (cursorPos != null && liveText.isNotEmpty()) {
                 chunkList + HandwritingGenerator.AbsoluteTextChunk(liveText.trim(), cursorPos!!.x, cursorPos!!.y)
             } else chunkList
@@ -114,18 +107,16 @@ fun HandwritingCanvasScreen(
                 generator.generateBitmapAtCoordinates(allChunks, pageNumber, dateText)
             }
             currentBitmap = bmp
-            onBitmapReady(bmp)    // notify parent (e.g., MainActivity)
+            onBitmapReady(bmp)
             isGenerating = false
         }
     }
 
-    // Trigger initial render and on any change
     LaunchedEffect(Unit) { regenerateBitmap() }
     LaunchedEffect(chunkList, liveText, cursorPos, pageNumber, dateText) {
         regenerateBitmap()
     }
 
-    // ---- Undo / Redo helpers ----
     fun pushUndo() {
         undoStack.add(chunkList)
         redoStack.clear()
@@ -204,7 +195,6 @@ fun HandwritingCanvasScreen(
                     horizontalArrangement = Arrangement.SpaceEvenly,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    // Write / Move toggle
                     IconButton(onClick = {
                         editorMode = if (editorMode == EditorMode.Write) EditorMode.Move else EditorMode.Write
                         selectedChunkIndex = null
@@ -216,22 +206,18 @@ fun HandwritingCanvasScreen(
                             tint = if (editorMode == EditorMode.Write) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.secondary
                         )
                     }
-                    // Undo
                     IconButton(onClick = { undo() }, enabled = undoStack.isNotEmpty()) {
                         Icon(Icons.Default.Undo, contentDescription = "Undo")
                     }
-                    // Redo
                     IconButton(onClick = { redo() }, enabled = redoStack.isNotEmpty()) {
                         Icon(Icons.Default.Redo, contentDescription = "Redo")
                     }
-                    // Delete selected
                     IconButton(
                         onClick = { selectedChunkIndex?.let { deleteChunk(it) } },
                         enabled = selectedChunkIndex != null && editorMode == EditorMode.Move
                     ) {
                         Icon(Icons.Default.Delete, contentDescription = "Delete")
                     }
-                    // Done button
                     TextButton(
                         onClick = { commitLiveText() },
                         enabled = cursorPos != null && liveText.isNotBlank()
@@ -246,7 +232,6 @@ fun HandwritingCanvasScreen(
                 .fillMaxSize()
                 .background(Color(0xFFF9F6F0))
         ) {
-            // Hidden text field for keyboard input (Write mode)
             BasicTextField(
                 value = liveText,
                 onValueChange = { newText ->
@@ -264,7 +249,6 @@ fun HandwritingCanvasScreen(
                 keyboardActions = KeyboardActions(onDone = { commitLiveText() })
             )
 
-            // Main interactive paper area (zoomable / pannable)
             Box(
                 modifier = Modifier
                     .fillMaxSize()
@@ -281,7 +265,6 @@ fun HandwritingCanvasScreen(
                                 val firstPointer = event.changes.firstOrNull() ?: continue
 
                                 when {
-                                    // Tap (press released)
                                     !firstPointer.pressed && firstPointer.previousPressed -> {
                                         val rawPos = firstPointer.position
                                         val paperPos = (rawPos - offset) / scale
@@ -292,7 +275,7 @@ fun HandwritingCanvasScreen(
                                             liveText = ""
                                             focusRequester.requestFocus()
                                             keyboardController?.show()
-                                        } else { // Move mode
+                                        } else {
                                             selectedChunkIndex = chunkList.indexOfLast { chunk ->
                                                 val w = generator.estimateTextWidth(chunk.text)
                                                 val rect = Rect(
@@ -304,7 +287,6 @@ fun HandwritingCanvasScreen(
                                         }
                                     }
 
-                                    // Dragging (move mode + selection)
                                     editorMode == EditorMode.Move && selectedChunkIndex != null &&
                                     firstPointer.pressed && firstPointer.positionChanged() -> {
                                         val delta = firstPointer.position - firstPointer.previousPosition
@@ -331,7 +313,6 @@ fun HandwritingCanvasScreen(
                         Canvas(modifier = Modifier.fillMaxSize()) {
                             drawImage(currentBitmap!!.asImageBitmap())
 
-                            // Crosshair cursor (Write mode)
                             if (cursorPos != null && editorMode == EditorMode.Write) {
                                 val alpha = blinkAlpha
                                 val cx = cursorPos!!.x
@@ -340,18 +321,14 @@ fun HandwritingCanvasScreen(
                                 drawLine(Color.Black.copy(alpha), Offset(cx, cy - 12f), Offset(cx, cy + 12f), 1.5f)
                             }
 
-                            // Selection highlight (Move mode)
                             if (selectedChunkIndex != null && editorMode == EditorMode.Move) {
                                 val chunk = chunkList[selectedChunkIndex!!]
                                 val w = generator.estimateTextWidth(chunk.text)
                                 val rectTopLeft = Offset(chunk.x - 4f, chunk.y - 28f)
                                 val rectSize = Size(w + 8f, 46f)
 
-                                // Background
                                 drawRect(Color.Blue.copy(alpha = 0.2f), rectTopLeft, rectSize)
-                                // Border
                                 drawRect(Color.Blue.copy(alpha = 0.8f), rectTopLeft, rectSize, style = Stroke(2f))
-                                // Resize handles
                                 drawRect(Color.Blue, rectTopLeft, Size(8f, 8f))
                                 drawRect(Color.Blue, Offset(chunk.x + w - 4f, chunk.y + 18f), Size(8f, 8f))
                             }
